@@ -111,7 +111,8 @@ DEFINE _opt_port STRING
 DEFINE _opt_startfile STRING
 DEFINE _opt_logfile STRING
 DEFINE _opt_autoclose BOOLEAN
-DEFINE _opt_ft_version INT
+DEFINE _opt_runonserver BOOLEAN
+DEFINE _opt_nostart BOOLEAN
 DEFINE _logChan base.Channel
 DEFINE _opt_program, _opt_program1 STRING
 DEFINE _verbose BOOLEAN
@@ -125,12 +126,12 @@ DEFINE _stderr base.Channel
 --CONSTANT size_i = 4 --sizeof(int)
 
 --DEFINE _pendingKeys HashSet
-DEFINE m_isMac INT
-DEFINE m_gbcdir STRING
-DEFINE m_owndir STRING
-DEFINE m_privdir STRING
-DEFINE m_pubdir STRING
-DEFINE m_progdir STRING
+DEFINE _isMac INT
+DEFINE _gbcdir STRING
+DEFINE _owndir STRING
+DEFINE _privdir STRING
+DEFINE _pubdir STRING
+DEFINE _progdir STRING
 DEFINE _htpre STRING
 DEFINE _serverkey SelectionKey
 DEFINE _server ServerSocketChannel
@@ -145,9 +146,8 @@ MAIN
   DEFINE htpre STRING
   DEFINE uapre, gbcpre, priv, pub STRING
   --DEFINE pending HashSet
-  LET m_isMac = NULL
+  LET _isMac = NULL
   --DEFINE clientkey SelectionKey
-  LET _opt_ft_version = NULL
   LET _starttime = CURRENT
   CALL parseArgs()
   LET _utf8 = StandardCharsets.UTF_8
@@ -291,22 +291,19 @@ END FUNCTION
 
 FUNCTION setup_program(priv STRING, pub STRING, port INT)
   DEFINE s STRING
-  --point FGLSERVER to us
-  LET m_owndir = os.Path.fullPath(os.Path.dirName(arg_val(0)))
-  LET m_privdir = os.Path.join(m_owndir, "priv")
-  --make FGLDIR/lib/FontAwesome.ttf cacheable..but this is just a hack
-  LET m_progdir = os.Path.fullPath(os.Path.dirname(_opt_program1))
-  --LET m_pubdir = os.Path.join(fgl_getenv("FGLDIR"), "lib")
-  LET m_pubdir = m_progdir
-  CALL os.Path.mkdir(m_privdir) RETURNING status
+  LET _owndir = os.Path.fullPath(os.Path.dirName(arg_val(0)))
+  LET _privdir = os.Path.join(_owndir, "priv")
+  LET _progdir = os.Path.fullPath(os.Path.dirname(_opt_program1))
+  LET _pubdir = _progdir
+  CALL os.Path.mkdir(_privdir) RETURNING status
   CALL fgl_setenv("FGLSERVER", SFMT("localhost:%1", port - 6400))
-  CALL fgl_setenv("FGL_PRIVATE_DIR", m_privdir)
-  CALL fgl_setenv("FGL_PUBLIC_DIR", m_pubdir)
+  CALL fgl_setenv("FGL_PRIVATE_DIR", _privdir)
+  CALL fgl_setenv("FGL_PUBLIC_DIR", _pubdir)
   CALL fgl_setenv("FGL_PUBLIC_IMAGEPATH", ".")
   CALL fgl_setenv("FGL_PRIVATE_URL_PREFIX", priv)
   CALL fgl_setenv("FGL_PUBLIC_URL_PREFIX", pub)
   --should work on both Win and Unix
-  --LET s= "cd ",m_progdir,"&&fglrun ",os.Path.baseName(prog)
+  --LET s= "cd ",_progdir,"&&fglrun ",os.Path.baseName(prog)
   LET s = SFMT("fglrun %1", _opt_program)
   CALL log(SFMT("RUN:%1 WITHOUT WAITING", s))
   RUN s WITHOUT WAITING
@@ -333,6 +330,13 @@ PRIVATE FUNCTION parseArgs()
   DEFINE o mygetopt.GetoptOptions
   DEFINE opt_arg STRING
   DEFINE i, cnt INT
+
+  LET i = o.getLength() + 1
+  LET o[i].name = "startfile"
+  LET o[i].description =
+      "JSON file with start info if no program is directly started"
+  LET o[i].opt_char = "a"
+  LET o[i].arg_type = mygetopt.REQUIRED
 
   LET i = o.getLength() + 1
   LET o[i].name = "version"
@@ -365,6 +369,20 @@ PRIVATE FUNCTION parseArgs()
   LET o[i].arg_type = mygetopt.REQUIRED
 
   LET i = o.getLength() + 1
+  LET o[i].name = "runonserver"
+  LET o[i].description =
+      "connects GMI/GMA via runonserver to the spawned program (internal dev)"
+  LET o[i].opt_char = "r"
+  LET o[i].arg_type = mygetopt.NONE
+
+  LET i = o.getLength() + 1
+  LET o[i].name = "nostart"
+  LET o[i].description =
+      "spawns the program and displays the program URL on stdout"
+  LET o[i].opt_char = "n"
+  LET o[i].arg_type = mygetopt.NONE
+
+  LET i = o.getLength() + 1
   LET o[i].name = "autoclose"
   LET o[i].description = "If the connecton ends fgljp closes"
   LET o[i].opt_char = "X"
@@ -385,15 +403,16 @@ PRIVATE FUNCTION parseArgs()
       WHEN 'p'
         LET _opt_port = opt_arg
         CALL parseInt(_opt_port) RETURNING status
-      WHEN 's'
+      WHEN 'a'
         LET _opt_startfile = opt_arg
+      WHEN 'n'
+        LET _opt_nostart = TRUE
       WHEN 'l'
         LET _opt_logfile = opt_arg
+      WHEN 'r'
+        LET _opt_runonserver = TRUE
       WHEN 'X'
         LET _opt_autoclose = TRUE
-      WHEN 'f'
-        MYASSERT(EQ(opt_arg, "0") OR EQ(opt_arg, "1") OR EQ(opt_arg, "2"))
-        LET _opt_ft_version = opt_arg
     END CASE
   END WHILE
   IF (cnt := mygetopt.getMoreArgumentCount(gr)) >= 1 THEN
@@ -764,7 +783,7 @@ FUNCTION gbcResourceName(fname STRING)
     WHEN fname.getIndexOf("webcomponents", 1) > 0
       LET fname = fname.subString(15, fname.getLength())
       --first look in <programdir>/webcomponents
-      LET trial = os.Path.join(m_progdir, fname)
+      LET trial = os.Path.join(_progdir, fname)
       IF os.Path.exists(trial) THEN
         LET fname = trial
       ELSE
@@ -774,9 +793,9 @@ FUNCTION gbcResourceName(fname STRING)
       END IF
       --WHEN fname == "js/gbc.bootstrap.js"
       --  DISPLAY "!!fake bootstrap"
-      --  LET fname = os.Path.join(m_owndir, "gbc.bootstrap.js")
+      --  LET fname = os.Path.join(_owndir, "gbc.bootstrap.js")
     OTHERWISE
-      LET fname = os.Path.join(m_gbcdir, fname)
+      LET fname = os.Path.join(_gbcdir, fname)
   END CASE
   --DISPLAY "gbcResourceName:", fname
   RETURN fname
@@ -1033,6 +1052,16 @@ FUNCTION handleMetaSel(line STRING)
       LET _sel.procIdWaiting = pp
     END IF
   END IF
+  CALL decideStartOrNewTask()
+END FUNCTION
+
+FUNCTION decideStartOrNewTask()
+  --either start client or send newTask
+  IF _sel.procIdParent IS NOT NULL THEN
+    CALL checkNewTask()
+  ELSE
+    CALL handleStart()
+  END IF
 END FUNCTION
 
 FUNCTION handleMeta(key SelectionKey, buf ByteBuffer, pos INT)
@@ -1138,17 +1167,21 @@ END FUNCTION
 
 FUNCTION handleStart()
   DEFINE url STRING
-  IF fgl_getenv("GMI") IS NOT NULL THEN
-    LET url = SFMT("%1ua/r/%2", _htpre, _sel.procId)
-    CALL connectToGMI(url)
-  ELSE
-    LET url = SFMT("%1gbc/index.html?app=%2", _htpre, _sel.procId)
-    CALL openBrowser(url)
-  END IF
+  LET url = SFMT("%1gbc/index.html?app=%2", _htpre, _sel.procId)
+  CASE
+    WHEN _opt_runonserver
+      LET url = SFMT("%1ua/r/%2", _htpre, _sel.procId)
+      CALL connectToGMI(url)
+    WHEN _opt_nostart --we just write the starting URL on stdout
+      DISPLAY url
+    OTHERWISE
+      CALL openBrowser(url)
+  END CASE
 END FUNCTION
 
 FUNCTION connectToGMI(url STRING) --works only for the emulator
-  DISPLAY "would runOnServer:", url
+  --DISPLAY "runOnServer:", url
+  --need to reset the env
   CALL fgl_setenv("FGLSERVER", _fglserver)
   CALL fgl_setenv("FGL_PRIVATE_DIR", "")
   CALL fgl_setenv("FGL_PUBLIC_DIR", "")
@@ -1156,16 +1189,6 @@ FUNCTION connectToGMI(url STRING) --works only for the emulator
   CALL fgl_setenv("FGL_PRIVATE_URL_PREFIX", "")
   CALL fgl_setenv("FGL_PUBLIC_URL_PREFIX", "")
   RUN SFMT("fglrun runonserver %1", url) WITHOUT WAITING
-  {
-  TRY
-    CALL ui.Interface.frontCall("mobile","runOnServer",
-          [url,5],[result])
-    CALL log(sfmt("runOnServer returned:%1",result))
-  CATCH
-    LET result=err_get(status)
-    DISPLAY "ERROR:",result
-  END TRY
-  }
 END FUNCTION
 
 FUNCTION handleConnectionInt(key SelectionKey, chan SocketChannel)
@@ -1241,12 +1264,6 @@ FUNCTION handleConnectionInt(key SelectionKey, chan SocketChannel)
         CASE
           WHEN line.getIndexOf("meta ", 1) == 1
             CALL handleMetaSel(line)
-            --start client
-            IF _sel.procIdParent IS NOT NULL THEN
-              CALL checkNewTask()
-            ELSE
-              CALL handleStart()
-            END IF
             EXIT WHILE
           WHEN line.getIndexOf("GET ", 1) == 1
               OR line.getIndexOf("PUT ", 1) == 1
@@ -1740,7 +1757,7 @@ PRIVATE FUNCTION _findGBCIn(dirname)
   IF os.Path.exists(os.Path.join(dirname, "index.html"))
       AND os.Path.exists(os.Path.join(dirname, "index.html"))
       AND os.Path.exists(os.Path.join(dirname, "VERSION")) THEN
-    LET m_gbcdir = dirname
+    LET _gbcdir = dirname
     RETURN TRUE
   END IF
   RETURN FALSE
@@ -1825,10 +1842,10 @@ FUNCTION isWin()
 END FUNCTION
 
 FUNCTION isMac()
-  IF m_isMac IS NULL THEN
-    LET m_isMac = isMacInt()
+  IF _isMac IS NULL THEN
+    LET _isMac = isMacInt()
   END IF
-  RETURN m_isMac
+  RETURN _isMac
 END FUNCTION
 
 FUNCTION isMacInt()

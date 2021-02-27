@@ -1,0 +1,15 @@
+ACTION DEFAULTS
+  ACTION next(ACCELERATOR=TAB)
+END
+LAYOUT(TEXT="This is a simple form")
+GRID 
+{
+Entry       [entry       ]
+Webcomponent[w           ]
+            [            ]
+
+}
+END
+ATTRIBUTES
+entry=FORMONLY.entry;
+WEBCOMPONENT w=FORMONLY.w,COMPONENTTYPE="input",SIZEPOLICY=FIXED,STRETCH=NONE;
