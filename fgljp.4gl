@@ -206,7 +206,9 @@ MAIN
     IF _didAcceptOnce AND _checkGoOut AND canGoOut() THEN
       EXIT WHILE
     END IF
-    --CALL printKeys("before select,registered keys:", _selector.keys())
+    IF _verbose THEN
+      CALL printKeys("before select,registered keys:", _selector.keys())
+    END IF
     CALL _selector.select();
     CALL processKeys("processKeys selectedKeys():", _selector.selectedKeys())
   END WHILE
@@ -216,12 +218,13 @@ FUNCTION processKeys(what STRING, inkeys Set)
   DEFINE keys Set
   DEFINE key SelectionKey
   DEFINE it Iterator
-  UNUSED_VAR(what)
   IF inkeys.size() == 0 THEN
     RETURN
   END IF
   LET keys = HashSet.create(inkeys) --create a clone to avoid mutation errors
-  --CALL printKeys(what, keys)
+  IF _verbose THEN
+    CALL printKeys(what, keys)
+  END IF
   LET it = keys.iterator()
   WHILE it.hasNext()
     LET key = CAST(it.next() AS SelectionKey);
@@ -1133,7 +1136,7 @@ FUNCTION reRegister()
   --DEFINE sel TSelectionRec
   DEFINE chan SocketChannel
   LET chan = _sel.chan
-  --CALL log(SFMT("re register:%1", printSel(_sel.*)))
+  CALL log(SFMT("re register:%1", printSel(_sel.*)))
   --re register the channel again
   CALL chan.configureBlocking(FALSE)
   LET numKeys = _selector.selectNow()
@@ -1197,6 +1200,7 @@ FUNCTION handleConnectionInt(key SelectionKey, chan SocketChannel)
   DEFINE bytearr ByteArray
   DEFINE jstring java.lang.String
   DEFINE sel TSelectionRec
+  DEFINE closed BOOLEAN
   LET dIn = _sel.dIn
   --DISPLAY "before: buf pos:",buf.position(),",caApacity:",buf.capacity(),",limit:",buf.limit()
   CALL key.interestOps(0)
@@ -1246,6 +1250,14 @@ FUNCTION handleConnectionInt(key SelectionKey, chan SocketChannel)
         LET _sel.state = S_FINISH
         EXIT WHILE
       ELSE
+        IF NOT _sel.isHTTP AND NOT _sel.isVM THEN
+          CALL log(
+              SFMT("handleConnectionInt: ignore empty line for:%1",
+                  printSel(_sel.*)))
+          CALL closeSel()
+          LET closed = TRUE
+          EXIT WHILE
+        END IF
         MYASSERT(_sel.isHTTP AND _sel.state == S_HEADERS)
         IF _sel.contentLen > 0 THEN
           LET _sel.state = S_WAITCONTENT
@@ -1290,11 +1302,26 @@ FUNCTION handleConnectionInt(key SelectionKey, chan SocketChannel)
     --  EXIT WHILE
     --END IF
   END WHILE
-  CALL checkReRegister()
+  IF NOT closed THEN
+    CALL checkReRegister()
+  END IF
   IF _verbose THEN
     LET sel = CAST(key.attachment() AS TSelectionRec)
-    CALL log(SFMT("handleConnection end of:%1", printSel(sel.*)))
+    CALL log(
+        SFMT("handleConnection end of:%1%2",
+            printSel(sel.*), IIF(closed, " closed", "")))
   END IF
+END FUNCTION
+
+FUNCTION closeSel()
+  IF _sel.dIn IS NOT NULL THEN
+    CALL _sel.dIn.close()
+  END IF
+  IF _sel.dOut IS NOT NULL THEN
+    CALL _sel.dOut.close()
+  END IF
+  CALL _sel.chan.close()
+  INITIALIZE _sel TO NULL
 END FUNCTION
 
 FUNCTION checkReRegister()
