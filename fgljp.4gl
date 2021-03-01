@@ -111,6 +111,7 @@ DEFINE _opt_port STRING
 DEFINE _opt_startfile STRING
 DEFINE _opt_logfile STRING
 DEFINE _opt_autoclose BOOLEAN
+DEFINE _opt_gdc BOOLEAN
 DEFINE _opt_runonserver BOOLEAN
 DEFINE _opt_nostart BOOLEAN
 DEFINE _logChan base.Channel
@@ -126,7 +127,8 @@ DEFINE _stderr base.Channel
 --CONSTANT size_i = 4 --sizeof(int)
 
 --DEFINE _pendingKeys HashSet
-DEFINE _isMac INT
+DEFINE _isMac BOOLEAN
+DEFINE _askedOnMac BOOLEAN
 DEFINE _gbcdir STRING
 DEFINE _owndir STRING
 DEFINE _privdir STRING
@@ -146,7 +148,6 @@ MAIN
   DEFINE htpre STRING
   DEFINE uapre, gbcpre, priv, pub STRING
   --DEFINE pending HashSet
-  LET _isMac = NULL
   --DEFINE clientkey SelectionKey
   LET _starttime = CURRENT
   CALL parseArgs()
@@ -379,6 +380,12 @@ PRIVATE FUNCTION parseArgs()
   LET o[i].arg_type = mygetopt.NONE
 
   LET i = o.getLength() + 1
+  LET o[i].name = "gdc"
+  LET o[i].description = "connects GDC to the spawned program (internal dev)"
+  LET o[i].opt_char = "g"
+  LET o[i].arg_type = mygetopt.NONE
+
+  LET i = o.getLength() + 1
   LET o[i].name = "nostart"
   LET o[i].description =
       "spawns the program and displays the program URL on stdout"
@@ -412,6 +419,8 @@ PRIVATE FUNCTION parseArgs()
         LET _opt_nostart = TRUE
       WHEN 'l'
         LET _opt_logfile = opt_arg
+      WHEN 'g'
+        LET _opt_gdc = TRUE
       WHEN 'r'
         LET _opt_runonserver = TRUE
       WHEN 'X'
@@ -1172,9 +1181,13 @@ FUNCTION handleStart()
   DEFINE url STRING
   LET url = SFMT("%1gbc/index.html?app=%2", _htpre, _sel.procId)
   CASE
-    WHEN _opt_runonserver
+    WHEN _opt_runonserver OR _opt_gdc
       LET url = SFMT("%1ua/r/%2", _htpre, _sel.procId)
-      CALL connectToGMI(url)
+      IF _opt_gdc THEN
+        CALL checkGDC(url)
+      ELSE
+        CALL connectToGMI(url)
+      END IF
     WHEN _opt_nostart --we just write the starting URL on stdout
       DISPLAY url
     OTHERWISE
@@ -1192,6 +1205,18 @@ FUNCTION connectToGMI(url STRING) --works only for the emulator
   CALL fgl_setenv("FGL_PRIVATE_URL_PREFIX", "")
   CALL fgl_setenv("FGL_PUBLIC_URL_PREFIX", "")
   RUN SFMT("fglrun runonserver %1", url) WITHOUT WAITING
+END FUNCTION
+
+FUNCTION connectToGDC(url STRING) --works only for the emulator
+  --DISPLAY "runOnServer:", url
+  --need to reset the env
+  CALL fgl_setenv("FGLSERVER", _fglserver)
+  CALL fgl_setenv("FGL_PRIVATE_DIR", "")
+  CALL fgl_setenv("FGL_PUBLIC_DIR", "")
+  CALL fgl_setenv("FGL_PUBLIC_IMAGEPATH", "")
+  CALL fgl_setenv("FGL_PRIVATE_URL_PREFIX", "")
+  CALL fgl_setenv("FGL_PUBLIC_URL_PREFIX", "")
+  RUN SFMT("fglrun runongdc %1", url) WITHOUT WAITING
 END FUNCTION
 
 FUNCTION handleConnectionInt(key SelectionKey, chan SocketChannel)
@@ -1826,6 +1851,45 @@ FUNCTION quote(path)
   RETURN path
 END FUNCTION
 
+FUNCTION checkGDC(url STRING)
+  DEFINE gdc, cmd STRING
+  LET gdc = getGDCPath()
+  IF NOT os.Path.exists(gdc) THEN
+    CALL myerr(SFMT("Can't find GDC executable at '%1'", gdc))
+  END IF
+  IF NOT os.Path.executable(gdc) THEN
+    DISPLAY "Warning:os.Path not executable:", gdc
+  END IF
+  LET cmd = SFMT("%1 -u %2", quote(gdc), url)
+  CALL log(SFMT("GDC cmd:%1", cmd))
+  RUN cmd WITHOUT WAITING
+END FUNCTION
+
+FUNCTION getGDCPath()
+  DEFINE cmd, fglserver, fglprofile, executable, native, dbg_unset, redir, orig
+      STRING
+  LET orig = fgl_getenv("FGLSERVER")
+  LET fglserver = fgl_getenv("GDCFGLSERVER")
+  CALL fgl_setenv("FGLSERVER", fglserver)
+  LET fglprofile = fgl_getenv("FGLPROFILE")
+  IF fglprofile IS NOT NULL THEN
+    LET native = os.Path.join(_owndir, "fglprofile")
+    CALL fgl_setenv("FGLPROFILE", native)
+  END IF
+  LET dbg_unset = IIF(isWin(), "set FGLGUIDEBUG=", "unset FGLGUIDEBUG")
+  --LET redir = IIF(isWin(), "2>nul", "2>/dev/null")
+  LET cmd =
+      SFMT("%1&&fglrun %2 %3",
+          dbg_unset, quote(os.Path.join(_owndir, "getgdcpath")), redir)
+  LET executable = getProgramOutput(cmd)
+  IF fglprofile IS NOT NULL THEN
+    CALL fgl_setenv("FGLPROFILE", fglprofile)
+  END IF
+  DISPLAY "gdc path:", executable
+  CALL fgl_setenv("FGLSERVER", orig)
+  RETURN executable
+END FUNCTION
+
 FUNCTION openBrowser(url)
   DEFINE url, cmd, browser STRING
   --DISPLAY "start GWC-JS URL:", url
@@ -1869,44 +1933,69 @@ FUNCTION isWin()
 END FUNCTION
 
 FUNCTION isMac()
-  IF _isMac IS NULL THEN
+  IF NOT _askedOnMac THEN
+    LET _askedOnMac = TRUE
     LET _isMac = isMacInt()
   END IF
   RETURN _isMac
 END FUNCTION
 
 FUNCTION isMacInt()
-  DEFINE arr DYNAMIC ARRAY OF STRING
   IF NOT isWin() THEN
-    CALL file_get_output("uname", arr)
-    IF arr.getLength() < 1 THEN
-      RETURN FALSE
-    END IF
-    IF arr[1] == "Darwin" THEN
-      RETURN TRUE
-    END IF
+    RETURN getProgramOutput("uname") == "Darwin"
   END IF
   RETURN FALSE
 END FUNCTION
 
-FUNCTION file_get_output(program, arr)
-  DEFINE program, linestr STRING
-  DEFINE arr DYNAMIC ARRAY OF STRING
-  DEFINE mystatus, idx INTEGER
-  DEFINE c base.Channel
-  LET c = base.channel.create()
-  WHENEVER ERROR CONTINUE
-  CALL c.openpipe(program, "r")
-  LET mystatus = status
-  WHENEVER ERROR STOP
-  IF mystatus THEN
-    CALL myerr(SFMT("program:%1, error:%2", program, err_get(mystatus)))
+FUNCTION getProgramOutput(cmd) RETURNS STRING
+  DEFINE cmd, cmdOrig, tmpName, errStr STRING
+  DEFINE txt TEXT
+  DEFINE ret STRING
+  DEFINE code INT
+  DISPLAY "RUN cmd:", cmd
+  LET cmdOrig = cmd
+  LET tmpName = makeTempName()
+  LET cmd = cmd, ">", tmpName, " 2>&1"
+  DISPLAY "run:", cmd
+  RUN cmd RETURNING code
+  DISPLAY "code:", code
+  LOCATE txt IN FILE tmpName
+  LET ret = txt
+  CALL os.Path.delete(tmpName) RETURNING status
+  IF code THEN
+    LET errStr = ",\n  output:", ret
+    CALL os.Path.delete(tmpName) RETURNING code
+    CALL myerr(SFMT("failed to RUN:%1%2", cmdOrig, errStr))
+  ELSE
+    --remove \r\n
+    IF ret.getCharAt(ret.getLength()) == "\n" THEN
+      LET ret = ret.subString(1, ret.getLength() - 1)
+    END IF
+    IF ret.getCharAt(ret.getLength()) == "\r" THEN
+      LET ret = ret.subString(1, ret.getLength() - 1)
+    END IF
   END IF
-  CALL arr.clear()
-  WHILE (linestr := c.readline()) IS NOT NULL
-    LET idx = idx + 1
-    --DISPLAY "LINE ",idx,"=",linestr
-    LET arr[idx] = linestr
-  END WHILE
-  CALL c.close()
+  RETURN ret
+END FUNCTION
+
+#+computes a temporary file name
+FUNCTION makeTempName()
+  DEFINE tmpDir, tmpName, curr STRING
+  DEFINE sb base.StringBuffer
+  IF isWin() THEN
+    LET tmpDir = fgl_getenv("TEMP")
+  ELSE
+    LET tmpDir = "/tmp"
+  END IF
+  LET curr = CURRENT
+  LET sb = base.StringBuffer.create()
+  CALL sb.append(curr)
+  CALL sb.replace(" ", "_", 0)
+  CALL sb.replace(":", "_", 0)
+  CALL sb.replace(".", "_", 0)
+  CALL sb.replace("-", "_", 0)
+  CALL sb.append(".tmp")
+  LET curr = sb.toString()
+  LET tmpName = os.Path.join(tmpDir, SFMT("fgl_%1_%2", fgl_getpid(), curr))
+  RETURN tmpName
 END FUNCTION
