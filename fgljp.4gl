@@ -91,6 +91,7 @@ TYPE TSelectionRec RECORD
   procId STRING, --VM procId
   procIdParent STRING, --VM procIdParent
   procIdWaiting STRING, --VM procIdWaiting
+  didSendVMClose BOOLEAN,
   --meta STRING,
   --metaSeen BOOLEAN,
   isHTTP BOOLEAN, --HTTP related members
@@ -264,6 +265,7 @@ END FUNCTION
 
 FUNCTION canGoOut()
   LET _checkGoOut = FALSE
+  --DISPLAY "_selDict.getLength:",_selDict.getLength(),",keys:",util.JSON.stringify(_selDict.getKeys())
   IF _selDict.getLength() == 0 THEN
     DISPLAY "no VM channels anymore"
     RETURN TRUE
@@ -569,7 +571,7 @@ FUNCTION parseHttpHeader(s STRING)
   LET _sel.headers[key] = val
 END FUNCTION
 
-FUNCTION handleVM()
+FUNCTION handleVM(vmclose BOOLEAN)
   DEFINE old TSelectionRec
   DEFINE procId STRING
   DEFINE line STRING
@@ -588,12 +590,13 @@ FUNCTION handleVM()
   ELSE
     CALL log(SFMT("  isBlocking:%1", printSel(_sel.*)))
   END IF
-  CALL sendToClient(line, procId, FALSE)
+  CALL sendToClient(line, procId, vmclose)
   LET _sel.httpKey = NULL
   LET _sel.state = S_FINISH
   CALL checkReRegister()
   LET _sel.* = old.*
   LET _sel.VmCmd = NULL
+  LET _sel.didSendVMClose = vmclose
 END FUNCTION
 
 FUNCTION checkNewTask()
@@ -608,7 +611,7 @@ FUNCTION checkNewTask()
   END IF
   LET old.* = _sel.*
   LET _sel.* = sel.*
-  CALL handleVM()
+  CALL handleVM(FALSE)
   LET _sel.* = old.*
 END FUNCTION
 
@@ -1125,7 +1128,7 @@ FUNCTION handleConnection(key SelectionKey)
   --CALL _pendingKeys.remove(key)
   --LET _currChan = chan --set the _currChan context
   CALL handleConnectionInt(key, chan)
-  IF _sel.isVM THEN --save VM state
+  IF _sel.isVM AND NOT _sel.didSendVMClose THEN --save VM state
     LET _selDict[_sel.procId].* = _sel.*
     --DISPLAY "did set:",_selDict[_sel.procId].VmCmd,",of :",_sel.procId
   END IF
@@ -1226,6 +1229,7 @@ FUNCTION handleConnectionInt(key SelectionKey, chan SocketChannel)
   DEFINE jstring java.lang.String
   DEFINE sel TSelectionRec
   DEFINE closed BOOLEAN
+  DEFINE httpKey SelectionKey
   LET dIn = _sel.dIn
   --DISPLAY "before: buf pos:",buf.position(),",caApacity:",buf.capacity(),",limit:",buf.limit()
   CALL key.interestOps(0)
@@ -1265,13 +1269,10 @@ FUNCTION handleConnectionInt(key SelectionKey, chan SocketChannel)
       --DISPLAY "line '' isVM:", _sel.isVM, ",isHTTP:", _sel.isHTTP
       IF _sel.isVM THEN
         CALL log(SFMT("VM finished:%1", printSel(_sel.*)))
-        {
-        IF _sel.httpKey IS NOT NULL THEN
-          DISPLAY "  could send to :", printKey(_sel.httpKey)
-        ELSE
-          DISPLAY "  no _sel.httpKey"
+        LET httpKey = _selDict[_sel.procId].httpKey
+        IF httpKey IS NOT NULL THEN
+          CALL handleVM(TRUE)
         END IF
-        }
         LET _sel.state = S_FINISH
         EXIT WHILE
       ELSE
@@ -1319,7 +1320,7 @@ FUNCTION handleConnectionInt(key SelectionKey, chan SocketChannel)
         END CASE
       WHEN _sel.isVM
         LET _sel.VmCmd = line
-        CALL handleVM()
+        CALL handleVM(FALSE)
         EXIT WHILE
     END CASE
     --IF line.getIndex
