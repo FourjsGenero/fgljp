@@ -198,9 +198,9 @@ PRIVATE FUNCTION expandArguments(
   LET argc = 0
   FOR i = 1 TO argv.getLength()
     LET arg = argv[i]
-    IF arg.substring(1, 1) == '@' THEN
-      LET fileName = arg.substring(2, arg.getLength())
-      IF NOT os.path.exists(fileName) THEN
+    IF arg.subString(1, 1) == '@' THEN
+      LET fileName = arg.subString(2, arg.getLength())
+      IF NOT os.Path.exists(fileName) THEN
         DISPLAY SFMT("getopt: File %1 not found.", fileName)
         RETURN BAD_OPTION, NULL
       END IF

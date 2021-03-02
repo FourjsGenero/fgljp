@@ -294,7 +294,7 @@ FUNCTION setup_program(priv STRING, pub STRING, port INT)
   DEFINE s STRING
   LET _owndir = os.Path.fullPath(os.Path.dirName(arg_val(0)))
   LET _privdir = os.Path.join(_owndir, "priv")
-  LET _progdir = os.Path.fullPath(os.Path.dirname(_opt_program1))
+  LET _progdir = os.Path.fullPath(os.Path.dirName(_opt_program1))
   LET _pubdir = _progdir
   CALL os.Path.mkdir(_privdir) RETURNING status
   CALL fgl_setenv("FGLSERVER", SFMT("localhost:%1", port - 6400))
@@ -736,7 +736,7 @@ FUNCTION sendToClient(x INT, vmCmd STRING, procId STRING, vmclose BOOLEAN)
   LET vmidx = _selDict[procId]
   LET _s[vmidx].VmCmd = NULL
   IF _s[vmidx].children.getLength() > 0 THEN
-    LET newProcId = _s[vmIdx].children[1]
+    LET newProcId = _s[vmidx].children[1]
     CALL _s[vmidx].children.deleteElement(1)
     LET hdrs[hdrs.getLength() + 1] = SFMT("X-FourJs-NewTask: %1", newProcId)
   END IF
@@ -1777,7 +1777,7 @@ FUNCTION checkGBCAvailable()
     IF NOT _findGBCIn(fgl_getenv("FGLGBCDIR")) THEN
       IF NOT _findGBCIn(
           os.Path.join(fgl_getenv("FGLDIR"), "web_utilities/gbc/gbc")) THEN
-        CALL myerr(
+        CALL myErr(
             "Can't find a GBC in <pwd>/gbc, fgl_getenv('FGLGBCDIR') or $FGLDIR/web_utilities/gbc/gbc")
       END IF
     END IF
@@ -1812,7 +1812,7 @@ FUNCTION checkGDC(url STRING)
   DEFINE gdc, cmd STRING
   LET gdc = getGDCPath()
   IF NOT os.Path.exists(gdc) THEN
-    CALL myerr(SFMT("Can't find GDC executable at '%1'", gdc))
+    CALL myErr(SFMT("Can't find GDC executable at '%1'", gdc))
   END IF
   IF NOT os.Path.executable(gdc) THEN
     DISPLAY "Warning:os.Path not executable:", gdc
@@ -1922,7 +1922,7 @@ FUNCTION getProgramOutput(cmd) RETURNS STRING
   IF code THEN
     LET errStr = ",\n  output:", ret
     CALL os.Path.delete(tmpName) RETURNING code
-    CALL myerr(SFMT("failed to RUN:%1%2", cmdOrig, errStr))
+    CALL myErr(SFMT("failed to RUN:%1%2", cmdOrig, errStr))
   ELSE
     --remove \r\n
     IF ret.getCharAt(ret.getLength()) == "\n" THEN
