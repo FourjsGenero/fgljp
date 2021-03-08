@@ -73,25 +73,26 @@ CONSTANT S_ACTIVE = "Active"
 CONSTANT S_WAITFORVM = "WaitForVM"
 CONSTANT S_FINISH = "Finish"
 
---record attached to each channels key
---holds the state of the connection
-TYPE TSelectionRec RECORD
+--record holding the state of the connection
+--a connection is either a VM connection or
+--a http connection
+TYPE TConnectionRec RECORD
   active BOOLEAN,
   chan SocketChannel,
   dIn DataInputStream,
   dOut DataOutputStream,
+  key SelectionKey,
   id INT,
   state STRING,
   starttime DATETIME HOUR TO FRACTION(1),
   isVM BOOLEAN, --VM related members
-  children TStringArr, --program children procId's
-  childCnt INT, --program children procId's
-  --t TStringDict,
-  httpKey SelectionKey, --http connection waiting
+  RUNchildren TStringArr, --program RUN children procId's
+  httpIdx INT, --http connection waiting
   VmCmd STRING, --last VM cmd
   procId STRING, --VM procId
   procIdParent STRING, --VM procIdParent
   procIdWaiting STRING, --VM procIdWaiting
+  sessId STRING, --session Id
   didSendVMClose BOOLEAN,
   --meta STRING,
   --metaSeen BOOLEAN,
@@ -101,10 +102,13 @@ TYPE TSelectionRec RECORD
   body STRING,
   headers TStringDict,
   contentLen INT,
-  clitag STRING
+  clitag STRING,
+  newtask BOOLEAN
 END RECORD
 
-DEFINE _s DYNAMIC ARRAY OF TSelectionRec
+DEFINE _s DYNAMIC ARRAY OF TConnectionRec
+-- keep track of RUN WITHOUT WAITING children
+DEFINE _RWWchildren DICTIONARY OF TStringArr
 
 DEFINE _utf8 Charset
 DEFINE _encoder CharsetEncoder
@@ -125,6 +129,7 @@ DEFINE _selDict DICTIONARY OF INTEGER
 DEFINE _checkGoOut BOOLEAN
 DEFINE _starttime DATETIME HOUR TO FRACTION(1)
 DEFINE _stderr base.Channel
+DEFINE _newtasks INT
 
 --CONSTANT size_i = 4 --sizeof(int)
 
@@ -248,11 +253,16 @@ FUNCTION printSel(x INT)
   LET diff = CURRENT - _s[x].starttime
   CASE
     WHEN _s[x].isVM
-      RETURN SFMT("{VM id:%1 s:%2 procId:%3 t:%4}",
-          x, _s[x].state, _s[x].procId, diff)
+      RETURN SFMT("{VM id:%1 s:%2 procId:%3 t:%4 pp:%5 pw:%6}",
+          x,
+          _s[x].state,
+          _s[x].procId,
+          diff,
+          _s[x].procIdParent,
+          _s[x].procIdWaiting)
     WHEN _s[x].isHTTP
-      RETURN SFMT("{HTTP id:%1 s:%2 p:%3 t:%4}",
-          x, _s[x].state, _s[x].path, diff)
+      RETURN SFMT("{HTTP id:%1 s:%2 p:%3 t:%4 n:%5 pid:%6}",
+          x, _s[x].state, _s[x].path, diff, _s[x].newtask, _s[x].procId)
     OTHERWISE
       RETURN SFMT("{_ id:%1 s:%2 t:%3}", x, _s[x].state, diff)
   END CASE
@@ -476,7 +486,7 @@ FUNCTION acceptNew()
   DEFINE dIn DataInputStream
   --DEFINE br BufferedReader
   DEFINE c INT
-  DEFINE empty TSelectionRec
+  DEFINE empty TConnectionRec
   DEFINE ji java.lang.Integer
   LET chan = _server.accept()
   IF chan IS NULL THEN
@@ -503,6 +513,7 @@ FUNCTION acceptNew()
   LET _s[c].starttime = CURRENT
   LET _s[c].active = TRUE
   LET _s[c].id = c
+  LET _s[c].key = clientkey
   LET ji = java.lang.Integer.create(c)
   CALL clientkey.attach(ji)
 END FUNCTION
@@ -576,30 +587,67 @@ FUNCTION parseHttpHeader(x INT, s STRING)
   LET _s[x].headers[key] = val
 END FUNCTION
 
-FUNCTION handleVM(vmidx INT, vmclose BOOLEAN)
-  DEFINE procId STRING
-  DEFINE line STRING
-  DEFINE httpKey SelectionKey
-  DEFINE ji java.lang.Integer
-  DEFINE x INT
-  LET procId = _s[vmidx].procId
-  LET line = _s[vmidx].VmCmd
-  LET httpKey = _s[vmidx].httpKey
-  MYASSERT(httpKey IS NOT NULL)
-  LET ji = CAST(httpKey.attachment() AS java.lang.Integer)
-  LET x = ji.intValue()
+FUNCTION checkHTTPForSend(x INT, procId STRING, vmclose BOOLEAN, line STRING)
+  DEFINE key SelectionKey
+  LET key = _s[x].key
   MYASSERT(_s[x].state == S_WAITFORVM)
+  CALL log(
+      SFMT("checkHTTPForSend procId:%1, vmclose:%2,%3",
+          procId, vmclose, printSel(x)))
   IF NOT _s[x].chan.isBlocking() THEN
     CALL log(SFMT("  !blocking:%1", printSel(x)))
-    CALL _s[x].chan.keyFor(_selector).cancel()
-    CALL _s[x].chan.configureBlocking(TRUE)
+    CALL configureBlocking(key, _s[x].chan)
   ELSE
     CALL log(SFMT("  isBlocking:%1", printSel(x)))
   END IF
   CALL sendToClient(x, line, procId, vmclose)
   LET _s[x].state = S_FINISH
   CALL checkReRegister(x)
-  LET _s[vmidx].httpKey = NULL
+END FUNCTION
+
+FUNCTION checkNewTasks(vmidx INT)
+  DEFINE sessId STRING
+  DEFINE i, len INT
+  IF _newtasks <= 0
+      OR (sessId := _s[vmidx].sessId) IS NULL
+      OR NOT _RWWchildren.contains(sessId)
+      OR _RWWchildren[sessId].getLength() == 0 THEN
+    RETURN
+  END IF
+  --DISPLAY "checkNewTasks:", printSel(vmidx), ",_newtasks:", _newtasks, ",sess:", util.JSON.stringify(_RWWchildren), ",sessId:",_s[vmidx].sessId
+  --FOR i = 1 TO _s.getLength()
+  --  IF _s[i].newtask THEN
+  --    DISPLAY "  newtask http:", printSel(i)
+  --  END IF
+  --END FOR
+  LET len = _s.getLength()
+  CALL log(
+      SFMT("checkNewTasksk sessId:%1, children:%2",
+          sessId, util.JSON.stringify(_RWWchildren[sessId])))
+  FOR i = 1 TO len
+    IF _s[i].newtask AND _s[i].procId == sessId THEN
+      CALL checkHTTPForSend(i, sessId, FALSE, "")
+    END IF
+  END FOR
+END FUNCTION
+
+FUNCTION handleVM(vmidx INT, vmclose BOOLEAN)
+  DEFINE procId STRING
+  DEFINE line STRING
+  DEFINE httpIdx INT
+  IF NOT vmclose THEN
+    CALL checkNewTasks(vmidx)
+  END IF
+  LET procId = _s[vmidx].procId
+  LET line = _s[vmidx].VmCmd
+  LET httpIdx = _s[vmidx].httpIdx
+  IF httpIdx == 0 THEN
+    CALL log(SFMT("handleVM line:'%1' but no httpIdx", limitPrintStr(line)))
+    RETURN
+  END IF
+  CALL checkHTTPForSend(httpIdx, procId, vmclose, line)
+  MYASSERT(httpIdx != 0)
+  LET _s[vmidx].httpIdx = 0
   LET _s[vmidx].VmCmd = NULL
   LET _s[vmidx].didSendVMClose = vmclose
 END FUNCTION
@@ -611,39 +659,45 @@ FUNCTION checkNewTask(vmidx INT)
   MYASSERT(procIdParent IS NOT NULL)
   LET pidx = _selDict[procIdParent]
   --DISPLAY "checkNewTask:", procIdParent, " for meta:", _s[vmidx].VmCmd
-  IF _s[pidx].httpKey IS NULL THEN
-    DISPLAY "checkNewTask(): parent httpKey is NULL"
+  CALL checkNewTasks(vmidx)
+  IF _s[pidx].httpIdx == 0 THEN
+    CALL log("checkNewTask(): parent httpIdx is NULL")
     RETURN
   END IF
   CALL handleVM(pidx, FALSE)
 END FUNCTION
 
 FUNCTION handleUAProto(x INT, path STRING)
-  DEFINE body, procId, vmCmd, surl, appId STRING
+  DEFINE body, procId, vmCmd, surl, appId, sessId STRING
   DEFINE qidx, vmidx INT
-  DEFINE vmclose BOOLEAN
+  DEFINE vmclose, newtask BOOLEAN
   DEFINE hdrs TStringArr
-  DEFINE key SelectionKey
+  --DEFINE key SelectionKey
   DEFINE dict TStringDict
   DEFINE url URI
   LET qidx = path.getIndexOf("?", 1)
+  LET qidx = IIF(qidx > 0, qidx, path.getLength() + 1)
 
   CASE
     WHEN path.getIndexOf("/ua/r/", 1) == 1
-      MYASSERT(qidx > 0)
       LET procId = path.subString(7, qidx - 1)
+      LET sessId = procId
       CALL log(SFMT("handleUAProto procId:%1", procId))
     WHEN path.getIndexOf("/ua/sua/", 1) == 1
       LET surl = "http://localhost", path
       CALL getURLQueryDict(surl) RETURNING dict, url
       LET appId = dict["appId"]
-      LET qidx = path.getIndexOf("?", 1)
       LET procId = path.subString(9, qidx - 1)
       IF appId <> "0" THEN
         --LET procId = _selDict[procId].t[appId]
         LET procId = appId
         MYASSERT(procId IS NOT NULL)
       END IF
+    WHEN path.getIndexOf("/ua/newtask/", 1) == 1
+      LET procId = path.subString(13, qidx - 1)
+      LET sessId = procId
+      LET _s[x].sessId = procId
+      LET newtask = TRUE
     WHEN (path.getIndexOf("/ua/ping/", 1)) == 1
       CALL log("handleUAProto ping")
       LET hdrs = getCacheHeaders(FALSE, "")
@@ -651,27 +705,45 @@ FUNCTION handleUAProto(x INT, path STRING)
       RETURN
   END CASE
   MYASSERT(procId IS NOT NULL)
-
-  IF _s[x].method == "POST" THEN
-    LET body = _s[x].body
-    --DISPLAY "POST body:'", body, "'"
-    IF body.getLength() > 0 THEN
-      CALL writeToVM(body, procId)
+  IF NOT newtask THEN
+    IF _s[x].method == "POST" THEN
+      LET body = _s[x].body
+      --DISPLAY "POST body:'", body, "'"
+      IF body.getLength() > 0 THEN
+        CALL writeToVM(body, procId)
+      END IF
+    END IF
+    IF NOT _selDict.contains(procId) THEN
+      DISPLAY "procId:",
+          procId,
+          " not in _selDict:",
+          util.JSON.stringify(_selDict.getKeys())
+    END IF
+    MYASSERT(_selDict.contains(procId))
+    LET vmidx = _selDict[procId]
+    LET vmCmd = _s[vmidx].VmCmd
+    IF sessId IS NOT NULL THEN
+      LET _s[vmidx].sessId = sessId
+      CALL _RWWchildren[sessId].clear()
+    ELSE
+      LET sessId = _s[vmidx].sessId
     END IF
   END IF
-  LET vmidx = _selDict[procId]
-  LET vmCmd = _s[vmidx].VmCmd
-  LET _s[x].procIdWaiting = _s[vmidx].procIdWaiting
   CASE
-    WHEN vmCmd IS NOT NULL OR (vmclose := (_s[vmidx].state == S_FINISH)) == TRUE
-      CALL sendToClient(x, vmCmd, procId, vmclose)
+    WHEN (vmCmd IS NOT NULL)
+        OR (newtask AND hasChildrenForVMIdx(vmidx, sessId))
+        OR (vmidx > 0 AND (vmclose := (_s[vmidx].state == S_FINISH)) == TRUE)
+      CALL sendToClient(x, IIF(newtask, "", vmCmd), procId, vmclose)
     WHEN vmCmd IS NULL
       --DISPLAY "  !!!!vmCmd IS NULL, switch to wait state"
       LET _s[x].state = S_WAITFORVM
-      LET key = _s[x].chan.keyFor(_selector)
-      --CALL key.attach(_sel)
-      --store in the VM dict our Http key
-      LET _s[vmidx].httpKey = key
+      IF newtask THEN
+        LET _newtasks = _newtasks + 1
+        LET _s[x].newtask = newtask
+        LET _s[x].procId = procId
+      ELSE
+        LET _s[vmidx].httpIdx = x
+      END IF
   END CASE
 END FUNCTION
 
@@ -697,22 +769,35 @@ FUNCTION sendNotModified(x INT, fname STRING, etag STRING)
       x, "", "text/plain; charset=UTF-8", hdrs, "304 Not Modified")
 END FUNCTION
 
-{
-FUNCTION syncSelDictFor(procId STRING)
-  DEFINE key SelectionKey
-  DEFINE sel TSelectionRec
-  LET key = _selDict[procId].chan.keyFor(_selector)
-  LET sel.* = _selDict[procId].*
-  CALL key.attach(sel)
+FUNCTION hasChildrenForVMIdx(vmidx INT, sessId STRING)
+  DEFINE children TStringArr
+  LET children = getChildrenForVMIdx(vmidx, sessId)
+  RETURN children.getLength() > 0
 END FUNCTION
-}
 
+--we lookup the RUN children first,
+--then the RUN WITHOUT WAITING children
+FUNCTION getChildrenForVMIdx(vmidx INT, sessId STRING)
+  DEFINE empty TStringArr
+  IF vmidx > 0 AND _s[vmidx].RUNchildren.getLength() > 0 THEN
+    RETURN _s[vmidx].RUNchildren
+  END IF
+  IF sessId IS NOT NULL AND _RWWchildren.contains(sessId) THEN
+    IF _RWWchildren[sessId].getLength() > 0 THEN
+      RETURN _RWWchildren[sessId]
+    END IF
+  END IF
+  RETURN empty
+END FUNCTION
+
+--sets all headers sent to the HTTP side
+--and the VM command, close or new task
 FUNCTION sendToClient(x INT, vmCmd STRING, procId STRING, vmclose BOOLEAN)
   DEFINE hdrs DYNAMIC ARRAY OF STRING
   DEFINE newProcId STRING
   DEFINE vmidx INT
+  DEFINE children TStringArr
   --DEFINE pp STRING
-  --DEFINE num INT
   LET hdrs[hdrs.getLength() + 1] = "Pragma: no-cache"
   LET hdrs[hdrs.getLength() + 1] = "Expires: -1"
   LET hdrs[hdrs.getLength() + 1] = "X-XSS-Protection: 1; mode=block"
@@ -731,14 +816,24 @@ FUNCTION sendToClient(x INT, vmCmd STRING, procId STRING, vmclose BOOLEAN)
   LET hdrs[hdrs.getLength() + 1] = SFMT("X-FourJs-Id: %1", procId)
   --END IF
   --LET hdrs[hdrs.getLength() + 1] = "X-FourJs-PageId: 1"
-  --DISPLAY "reset VmCmd of:",procId
-  MYASSERT(_selDict.contains(procId))
-  LET vmidx = _selDict[procId]
-  LET _s[vmidx].VmCmd = NULL
-  IF _s[vmidx].children.getLength() > 0 THEN
-    LET newProcId = _s[vmidx].children[1]
-    CALL _s[vmidx].children.deleteElement(1)
+  --DISPLAY "sendToClient procId:", procId, ", ", printSel(x)
+  IF _s[x].sessId IS NULL THEN --sessId is set in the newtask case
+    MYASSERT(_selDict.contains(procId))
+    LET vmidx = _selDict[procId]
+    IF vmCmd.getLength() > 0 THEN
+      LET _s[vmidx].VmCmd = NULL
+    END IF
+  END IF
+  LET children = getChildrenForVMIdx(vmidx, _s[x].sessId)
+  IF children.getLength() > 0 THEN
+    LET newProcId = children[1]
+    CALL children.deleteElement(1)
     LET hdrs[hdrs.getLength() + 1] = SFMT("X-FourJs-NewTask: %1", newProcId)
+    IF _s[x].newtask THEN
+      LET _newtasks = _newtasks - 1
+      LET _s[x].newtask = FALSE
+    END IF
+    --DISPLAY "send X-FourJs-NewTask: ", newProcId
   END IF
   IF vmclose THEN --must be the last check in _selDict
     LET hdrs[hdrs.getLength() + 1] = "X-FourJs-Closed: true"
@@ -761,8 +856,7 @@ FUNCTION httpHandler(x INT)
   CALL log(SFMT("httpHandler '%1' for:%2", path, printSel(x)))
   CASE
     WHEN path == "/"
-      DISPLAY "send root"
-      LET text = "<!DOCTYPE html><html><body>Hello root</body></html>"
+      LET text = "<!DOCTYPE html><html><body>This is fgljp</body></html>"
       CALL writeResponse(x, text)
     WHEN path.getIndexOf("/ua/", 1) == 1 --ua proto
       CALL handleUAProto(x, path)
@@ -1031,7 +1125,7 @@ FUNCTION extractProcId(p STRING)
 END FUNCTION
 
 FUNCTION handleMetaSel(vmidx INT, line STRING)
-  DEFINE pp, pw STRING
+  DEFINE pp, procIdWaiting, sessId STRING
   DEFINE ppidx INT
   DEFINE children TStringArr
   LET _s[vmidx].isVM = TRUE
@@ -1040,23 +1134,33 @@ FUNCTION handleMetaSel(vmidx INT, line STRING)
   CALL log(SFMT("handleMetaSel:%1", line))
   LET _s[vmidx].procId = extractProcId(extractMetaVar(line, "procId", TRUE))
   --DISPLAY "procId:'", _s[vmidx].procId, "'"
+  LET procIdWaiting = extractMetaVar(line, "procIdWaiting", FALSE)
+  IF procIdWaiting IS NOT NULL THEN
+    LET procIdWaiting = extractProcId(procIdWaiting)
+    LET _s[vmidx].procIdWaiting = procIdWaiting
+  END IF
   LET pp = extractMetaVar(line, "procIdParent", FALSE)
   IF pp IS NOT NULL THEN
     LET pp = extractProcId(pp)
+    --DISPLAY "procIdParent of:", _s[vmidx].procId, " is:", pp
     IF _selDict.contains(pp) THEN
       LET ppidx = _selDict[pp]
-      LET children = _s[ppidx].children
+      IF (sessId := _s[ppidx].sessId) IS NOT NULL THEN
+        LET _s[vmidx].sessId = sessId
+        IF _RWWchildren.contains(sessId) THEN
+          LET children =
+              _RWWchildren[sessId] --could be RUN WITHOUT WAITING child
+        END IF
+      END IF
+      IF procIdWaiting == pp THEN
+        LET children = _s[ppidx].RUNchildren --procIdWaiting forces a RUN child
+      END IF
       LET children[children.getLength() + 1] = _s[vmidx].procId
-      --DISPLAY "!!!!!!!!!!!!1set children to:", util.JSON.stringify(children)
+      --DISPLAY "!!!!set children of:",
+      --    printSel(ppidx),
+      --    " to:",
+      --    util.JSON.stringify(children)
       LET _s[vmidx].procIdParent = pp
-    END IF
-  END IF
-  LET pw = extractMetaVar(line, "procIdWaiting", FALSE)
-  IF pw IS NOT NULL THEN
-    LET pw = extractProcId(pw)
-    IF pw == pp THEN
-      MYASSERT(_selDict.contains(pp))
-      LET _s[vmidx].procIdWaiting = pp
     END IF
   END IF
   CALL decideStartOrNewTask(vmidx)
@@ -1102,7 +1206,7 @@ FUNCTION handleConnection(key SelectionKey)
   DEFINE chan SocketChannel
   DEFINE readable BOOLEAN
   DEFINE ji java.lang.Integer
-  DEFINE empty TSelectionRec
+  DEFINE empty TConnectionRec
   DEFINE c INT
   TRY
     LET readable = key.isReadable()
@@ -1141,6 +1245,7 @@ FUNCTION reRegister(c INT)
   LET numKeys = _selector.selectNow()
   LET newkey = chan.register(_selector, SelectionKey.OP_READ);
   LET ji = java.lang.Integer.create(c)
+  LET _s[c].key = newkey
   CALL newkey.attach(ji)
 END FUNCTION
 
@@ -1187,111 +1292,24 @@ FUNCTION connectToGDC(url STRING) --works only for the emulator
   RUN SFMT("fglrun runongdc %1", url) WITHOUT WAITING
 END FUNCTION
 
-FUNCTION handleConnectionInt(c INT, key SelectionKey, chan SocketChannel)
-  DEFINE dIn DataInputStream
-  DEFINE line, procId STRING
-  DEFINE bytearr ByteArray
-  DEFINE jstring java.lang.String
-  DEFINE closed BOOLEAN
-  DEFINE httpKey SelectionKey
-  DEFINE vmidx INT
-  LET dIn = _s[c].dIn
-  --DISPLAY "before: buf pos:",buf.position(),",caApacity:",buf.capacity(),",limit:",buf.limit()
+FUNCTION configureBlocking(key SelectionKey, chan SocketChannel)
   CALL key.interestOps(0)
   CALL key.cancel()
   CALL chan.configureBlocking(TRUE)
-  WHILE TRUE
+END FUNCTION
+
+FUNCTION handleConnectionInt(c INT, key SelectionKey, chan SocketChannel)
+  DEFINE dIn DataInputStream
+  DEFINE go_out, closed BOOLEAN
+  LET dIn = _s[c].dIn
+  --DISPLAY "before: buf pos:",buf.position(),",caApacity:",buf.capacity(),",limit:",buf.limit()
+  CALL configureBlocking(key, chan)
+  WHILE NOT go_out
     IF _s[c].isHTTP AND _s[c].state == S_WAITCONTENT THEN
-      CALL log(
-          SFMT("S_WAITCONTENT of :%1, read:%2 bytes",
-              _s[c].path, _s[c].contentLen))
-      LET bytearr = ByteArray.create(_s[c].contentLen)
-      CALL dIn.read(bytearr)
-      LET jstring = java.lang.String.create(bytearr, StandardCharsets.UTF_8)
-      LET _s[c].body = jstring
-      {
-      IF _s[c].body.getIndexOf("GET", 1) > 0
-          OR _s[c].body.getIndexOf("POST", 1) > 0 THEN
-        DISPLAY "wrong body:", _s[c].body
-        MYASSERT(FALSE)
-      END IF
-      }
-      LET _s[c].state = S_FINISH
-      CALL httpHandler(c)
+      CALL handleWaitContent(c, dIn)
       EXIT WHILE
     END IF
-    TRY
-      IF _s[c].isVM THEN
-        LET line = dIn.readLine() --read[]
-      ELSE
-        LET line = dIn.readLine()
-      END IF
-    CATCH
-      CALL log(SFMT("readLine error:%1", err_get(status)))
-      CALL chan.close()
-      RETURN
-    END TRY
-    --DISPLAY "line:",limitPrintStr(line)
-    IF line.getLength() == 0 THEN
-      --DISPLAY "line '' isVM:", _s[c].isVM, ",isHTTP:", _s[c].isHTTP
-      IF _s[c].isVM THEN
-        CALL log(SFMT("VM finished:%1", printSel(c)))
-        LET procId = _s[c].procId
-        MYASSERT(_selDict.contains(procId))
-        LET vmidx = _selDict[procId]
-        LET httpKey = _s[vmidx].httpKey
-        IF httpKey IS NOT NULL THEN
-          CALL handleVM(vmidx, TRUE)
-        END IF
-        LET _s[c].state = S_FINISH
-        EXIT WHILE
-      ELSE
-        IF NOT _s[c].isHTTP AND NOT _s[c].isVM THEN
-          CALL log(
-              SFMT("handleConnectionInt: ignore empty line for:%1",
-                  printSel(c)))
-          CALL closeSel(c)
-          LET closed = TRUE
-          EXIT WHILE
-        END IF
-        MYASSERT(_s[c].isHTTP AND _s[c].state == S_HEADERS)
-        IF _s[c].contentLen > 0 THEN
-          LET _s[c].state = S_WAITCONTENT
-          EXIT WHILE
-        ELSE
-          --DISPLAY "Finish of :", _s[c].path
-          LET _s[c].state = S_FINISH
-          CALL httpHandler(c)
-          EXIT WHILE
-        END IF
-      END IF
-    END IF
-    CASE
-      WHEN NOT _s[c].isVM AND NOT _s[c].isHTTP
-        CASE
-          WHEN line.getIndexOf("meta ", 1) == 1
-            CALL handleMetaSel(c, line)
-            EXIT WHILE
-          WHEN line.getIndexOf("GET ", 1) == 1
-              OR line.getIndexOf("PUT ", 1) == 1
-              OR line.getIndexOf("POST ", 1) == 1
-              OR line.getIndexOf("HEAD ", 1) == 1
-            CALL parseHttpLine(c, line)
-            LET _s[c].isHTTP = TRUE
-            LET _s[c].state = S_HEADERS
-          OTHERWISE
-            CALL myErr(SFMT("Unexpected connection handshake:%1", line))
-        END CASE
-      WHEN _s[c].isHTTP
-        CASE _s[c].state
-          WHEN S_HEADERS
-            CALL parseHttpHeader(c, line)
-        END CASE
-      WHEN _s[c].isVM
-        LET _s[c].VmCmd = line
-        CALL handleVM(c, FALSE)
-        EXIT WHILE
-    END CASE
+    CALL handleReadLine(c, dIn) RETURNING go_out, closed
   END WHILE
   IF NOT closed THEN
     CALL checkReRegister(c)
@@ -1299,6 +1317,108 @@ FUNCTION handleConnectionInt(c INT, key SelectionKey, chan SocketChannel)
   CALL log(
       SFMT("handleConnection end of:%1%2",
           printSel(c), IIF(closed, " closed", "")))
+END FUNCTION
+
+--main HTPP/VM connection state machine
+FUNCTION handleReadLine(c INT, dIn DataInputStream)
+  DEFINE line STRING
+  CONSTANT GO_OUT = TRUE
+  CONSTANT CLOSED = TRUE
+  IF _s[c].isVM THEN
+    LET line = dIn.readLine() --TODO: buffered reader
+  ELSE
+    LET line = dIn.readLine()
+  END IF
+  --DISPLAY "line:",limitPrintStr(line)
+  IF line.getLength() == 0 THEN
+    --DISPLAY "line '' isVM:", _s[c].isVM, ",isHTTP:", _s[c].isHTTP
+    IF _s[c].isVM THEN
+      CALL handleVMFinish(c)
+      RETURN GO_OUT, FALSE
+    ELSE
+      IF NOT _s[c].isHTTP AND NOT _s[c].isVM THEN
+        CALL log(
+            SFMT("handleConnectionInt: ignore empty line for:%1", printSel(c)))
+        CALL closeSel(c)
+        RETURN GO_OUT, CLOSED
+      END IF
+      MYASSERT(_s[c].isHTTP AND _s[c].state == S_HEADERS)
+      IF _s[c].contentLen > 0 THEN
+        LET _s[c].state = S_WAITCONTENT
+        RETURN GO_OUT, FALSE
+      ELSE
+        --DISPLAY "Finish of :", _s[c].path
+        LET _s[c].state = S_FINISH
+        CALL httpHandler(c)
+        RETURN GO_OUT, FALSE
+      END IF
+    END IF
+  END IF
+  CASE
+    WHEN NOT _s[c].isVM AND NOT _s[c].isHTTP
+      CASE
+        WHEN line.getIndexOf("meta ", 1) == 1
+          CALL handleMetaSel(c, line)
+          RETURN GO_OUT, FALSE
+        WHEN line.getIndexOf("GET ", 1) == 1
+            OR line.getIndexOf("PUT ", 1) == 1
+            OR line.getIndexOf("POST ", 1) == 1
+            OR line.getIndexOf("HEAD ", 1) == 1
+          CALL parseHttpLine(c, line)
+          LET _s[c].isHTTP = TRUE
+          LET _s[c].state = S_HEADERS
+        OTHERWISE
+          CALL myErr(SFMT("Unexpected connection handshake:%1", line))
+      END CASE
+    WHEN _s[c].isHTTP
+      MYASSERT(_s[c].state == S_HEADERS)
+      CALL parseHttpHeader(c, line)
+      --CASE _s[c].state
+      --  WHEN S_HEADERS
+      --    CALL parseHttpHeader(c, line)
+      --END CASE
+    WHEN _s[c].isVM
+      LET _s[c].VmCmd = line
+      CALL handleVM(c, FALSE)
+      RETURN GO_OUT, FALSE
+    OTHERWISE
+      CALL myErr("Unhandled case")
+  END CASE
+  RETURN FALSE, FALSE
+END FUNCTION
+
+FUNCTION handleWaitContent(x INT, dIn DataInputStream)
+  DEFINE bytearr ByteArray
+  DEFINE jstring java.lang.String
+  CALL log(SFMT("handleWaitContent %1, read:%2", _s[x].path, _s[x].contentLen))
+  LET bytearr = ByteArray.create(_s[x].contentLen)
+  CALL dIn.read(bytearr)
+  LET jstring = java.lang.String.create(bytearr, StandardCharsets.UTF_8)
+  LET _s[x].body = jstring
+  {
+  IF _s[x].body.getIndexOf("GET", 1) > 0
+      OR _s[x].body.getIndexOf("POST", 1) > 0 THEN
+    DISPLAY "wrong body:", _s[x].body
+    MYASSERT(FALSE)
+  END IF
+  }
+  LET _s[x].state = S_FINISH
+  CALL httpHandler(x)
+END FUNCTION
+
+FUNCTION handleVMFinish(c INT)
+  DEFINE procId STRING
+  DEFINE vmidx, httpIdx INT
+  CALL log(SFMT("handleVMFinish:%1", printSel(c)))
+  LET procId = _s[c].procId
+  MYASSERT(_selDict.contains(procId))
+  LET vmidx = _selDict[procId]
+  MYASSERT(vmidx == c)
+  LET httpIdx = _s[vmidx].httpIdx
+  IF httpIdx != 0 THEN
+    CALL handleVM(vmidx, TRUE)
+  END IF
+  LET _s[vmidx].state = S_FINISH
 END FUNCTION
 
 FUNCTION closeSel(x INT)
@@ -1314,7 +1434,7 @@ END FUNCTION
 
 FUNCTION checkReRegister(c INT)
   DEFINE newChan BOOLEAN
-  DEFINE empty TSelectionRec
+  DEFINE empty TConnectionRec
   IF (_s[c].state <> S_FINISH AND _s[c].state <> S_WAITFORVM)
       OR (newChan := (_keepalive AND _s[c].state == S_FINISH AND _s[c].isHTTP))
           == TRUE THEN

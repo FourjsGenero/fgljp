@@ -16,6 +16,8 @@ MAIN
       CALL showForm()
     COMMAND "RUN"
       RUN SFMT("fglrun demo %1 %2", arg || "+", arg_val(2))
+    COMMAND "RUN WITHOUT WAITING"
+      RUN SFMT("fglrun demo %1 %2", arg || "+", arg_val(2)) WITHOUT WAITING
     COMMAND "EXIT"
       EXIT MENU
   END MENU
