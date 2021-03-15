@@ -1872,7 +1872,7 @@ FUNCTION getURLQueryDict(surl STRING) RETURNS(TStringDict, URI)
   RETURN d, url
 END FUNCTION
 
-FUNCTION scanCacheParameters(vmidx INT, fileName STRING, ftg FTGetImage INOUT)
+FUNCTION scanCacheParameters(vmidx INT, fileName STRING, ftg FTGetImage)
   DEFINE d TStringDict
   DEFINE url URI
   CALL getURLQueryDict(fileName) RETURNING d, url
@@ -2536,7 +2536,7 @@ FUNCTION checkCached4Fmt(src STRING) RETURNS(BOOLEAN, STRING, INT, INT)
   RETURN TRUE, realPath, s, t
 END FUNCTION
 
-FUNCTION handleDelayedImage(vmidx INT, ftg FTGetImage INOUT)
+FUNCTION handleDelayedImage(vmidx INT, ftg FTGetImage)
   DEFINE cachedFile STRING
   DEFINE x INT
   MYASSERT(ftg.httpIdx > 0)
@@ -2547,7 +2547,7 @@ FUNCTION handleDelayedImage(vmidx INT, ftg FTGetImage INOUT)
   CALL finishHttp(x)
 END FUNCTION
 
-FUNCTION handleFTNotFound(vmidx INT, ftg FTGetImage INOUT)
+FUNCTION handleFTNotFound(vmidx INT, ftg FTGetImage)
   DEFINE x, idx INT
   DEFINE name, vmName STRING
   MYASSERT(ftg.httpIdx > 0)
@@ -2573,8 +2573,7 @@ FUNCTION handleFTNotFound(vmidx INT, ftg FTGetImage INOUT)
   END IF
 END FUNCTION
 
-FUNCTION handleDelayedImageInt(
-    vmidx INT, ftg FTGetImage INOUT, cachedFile STRING)
+FUNCTION handleDelayedImageInt(vmidx INT, ftg FTGetImage, cachedFile STRING)
   DEFINE t INT
   CALL log(SFMT("handleDelayedImage:", vmidx, util.JSON.stringify(ftg)))
   CALL removeImg(vmidx, ftg.*)
@@ -2666,7 +2665,7 @@ FUNCTION checkRequestFT(x INT, vmidx INT, fname STRING)
   CALL lookupNextImage(vmidx)
 END FUNCTION
 
-FUNCTION removeImg(vmidx INT, ftg FTGetImage INOUT)
+FUNCTION removeImg(vmidx INT, ftg FTGetImage)
   DEFINE i INT
   DEFINE FTs FTList
   LET FTs = getFTs(vmidx)
@@ -2687,7 +2686,7 @@ FUNCTION removeImg(vmidx INT, ftg FTGetImage INOUT)
   --DISPLAY "after removal:", util.JSON.stringify(_s[vmidx].FTs)
 END FUNCTION
 
-FUNCTION updateImg(vmidx INT, ftg FTGetImage INOUT)
+FUNCTION updateImg(vmidx INT, ftg FTGetImage)
   DEFINE len, i INT
   DEFINE FTs FTList
   LET FTs = getFTs(vmidx)
@@ -2750,7 +2749,7 @@ FUNCTION lookupNextImage(vmidx INT)
   END IF
 END FUNCTION
 
-FUNCTION checkCacheSendInformation(vmidx INT, ftg FTGetImage INOUT)
+FUNCTION checkCacheSendInformation(vmidx INT, ftg FTGetImage)
   --//we append the new special query to indicate we want to get
   --//size and mtime information in the ack answer
   DEFINE s, t INT
