@@ -1854,8 +1854,12 @@ FUNCTION getURLQueryDict(surl STRING) RETURNS(TStringDict, URI)
   DEFINE idx INT
   DEFINE tok base.StringTokenizer
   DEFINE d TStringDict
+  LET surl = replace(surl, " ", "+")
   IF isWin() THEN
     LET surl = replace(surl, "\\", "/")
+    IF surl.getIndexOf(":", 1) == 2 THEN --drive letter
+      LET surl = "http:", surl.subString(3, surl.getLength())
+    END IF
   END IF
   LET url = URI.create(surl)
   LET q = url.getQuery()
