@@ -1700,7 +1700,7 @@ FUNCTION handleWaitContent(x INT, dIn DataInputStream)
   DEFINE jstring java.lang.String
   CALL log(SFMT("handleWaitContent %1, read:%2", _s[x].path, _s[x].contentLen))
   LET bytearr = ByteArray.create(_s[x].contentLen)
-  CALL dIn.read(bytearr)
+  CALL dIn.readFully(bytearr)
   LET jstring = java.lang.String.create(bytearr, StandardCharsets.UTF_8)
   LET _s[x].body = jstring
   {
@@ -1773,14 +1773,13 @@ END FUNCTION
 FUNCTION getNameC(dIn DataInputStream)
   DEFINE name STRING
   DEFINE arr MyByteArray
-  DEFINE namesize, xlen, read INT
+  DEFINE namesize, xlen INT
   DEFINE jstring java.lang.String
   LET namesize = ntohl(dIn.readInt())
   LET arr = MyByteArray.create(namesize)
   TRY
     --CALL buf.get(arr)
-    LET read = dIn.read(arr)
-    MYASSERT(read == namesize)
+    CALL dIn.readFully(arr)
   CATCH
     CALL myErr(err_get(status))
   END TRY
@@ -2450,7 +2449,7 @@ FUNCTION handleFT(vmidx INT, dIn DataInputStream, dataSize INT)
     WHEN FTBody
       LET numBytes = dataSize - 5
       LET ba = MyByteArray.create(numBytes)
-      MYASSERT(dIn.read(ba) == numBytes)
+      CALL dIn.readFully(ba)
       CALL log(
           SFMT("FTbody for num:%1", num)
           --",pos:%2,limit:%3",
