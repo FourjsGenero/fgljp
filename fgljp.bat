@@ -7,8 +7,10 @@ FOR %%i IN ("%CD%") DO (
 pushd %CD%
 %THISDRIVE%
 cd %FGLJPDIR%
-fglcomp -M -r -Wall fgljp.4gl
+rem compile mygetopt first as it is used b fgljp
 fglcomp -M -r -Wall mygetopt.4gl
+IF %errorlevel% NEQ 0 GOTO myend
+fglcomp -M -r -Wall fgljp.4gl
 IF %errorlevel% NEQ 0 GOTO myend
 popd
 %MYDRIVE%

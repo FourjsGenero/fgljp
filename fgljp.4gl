@@ -179,6 +179,7 @@ DEFINE _opt_port STRING
 DEFINE _opt_startfile STRING
 DEFINE _opt_logfile STRING
 DEFINE _opt_autoclose BOOLEAN
+DEFINE _opt_any BOOLEAN
 DEFINE _opt_gdc BOOLEAN
 DEFINE _opt_runonserver BOOLEAN
 DEFINE _opt_nostart BOOLEAN
@@ -235,10 +236,12 @@ MAIN
   ---CALL log(SFMT("use port:%1 for bind()", port))
   LABEL bind_again:
   TRY
-    LET addr = InetAddress.getLoopbackAddress()
-    LET saddr = InetSocketAddress.create(addr, port)
-    --for listening on ANY just call
-    --LET saddr= InetSocketAddress.create(port)
+    IF _opt_any THEN --we are reachable from outside and get firewall warnings
+      LET saddr = InetSocketAddress.create(port)
+    ELSE
+      LET addr = InetAddress.getLoopbackAddress()
+      LET saddr = InetSocketAddress.create(addr, port)
+    END IF
     CALL socket.bind(saddr)
   CATCH
     CALL log(SFMT("socket.bind:%1", err_get(status)))
@@ -430,8 +433,8 @@ PRIVATE FUNCTION parseArgs()
   LET i = o.getLength() + 1
   LET o[i].name = "startfile"
   LET o[i].description =
-      "JSON file with start info if no program is directly started"
-  LET o[i].opt_char = "a"
+      "JSON file with start info (port,pid,FGLSERVER) if no program is directly started"
+  LET o[i].opt_char = "o"
   LET o[i].arg_type = mygetopt.REQUIRED
 
   LET i = o.getLength() + 1
@@ -490,6 +493,12 @@ PRIVATE FUNCTION parseArgs()
   LET o[i].opt_char = "X"
   LET o[i].arg_type = mygetopt.NONE
 
+  LET i = o.getLength() + 1
+  LET o[i].name = "listen-any"
+  LET o[i].description = "fgljp is reachable from outside"
+  LET o[i].opt_char = "a"
+  LET o[i].arg_type = mygetopt.NONE
+
   CALL mygetopt.initialize(gr, "fgljp", mygetopt.copyArguments(1), o)
   WHILE mygetopt.getopt(gr) == mygetopt.SUCCESS
     LET opt_arg = gr[1].opt_arg
@@ -505,7 +514,7 @@ PRIVATE FUNCTION parseArgs()
       WHEN 'p'
         LET _opt_port = opt_arg
         CALL parseInt(_opt_port) RETURNING status
-      WHEN 'a'
+      WHEN 'o'
         LET _opt_startfile = opt_arg
       WHEN 'n'
         LET _opt_nostart = TRUE
@@ -517,6 +526,8 @@ PRIVATE FUNCTION parseArgs()
         LET _opt_runonserver = TRUE
       WHEN 'X'
         LET _opt_autoclose = TRUE
+      WHEN 'a'
+        LET _opt_any = TRUE
     END CASE
   END WHILE
   IF (cnt := mygetopt.getMoreArgumentCount(gr)) >= 1 THEN
@@ -1810,14 +1821,14 @@ FUNCTION clientSideName(name STRING, subDir STRING) RETURNS STRING
     MYASSERT(os.Path.mkdir(subDir) == 1)
   END IF
   --//first quote our replacement characters
-  IF fgl_getenv("WINDIR") IS NOT NULL THEN
+  IF isWin() THEN
     CALL b.replace(",", ",,", 0)
   ELSE
     CALL b.replace("|", "||", 0)
   END IF
   CALL b.replace("_", "__", 0)
   --//make the file name a flat name
-  IF fgl_getenv("WINDIR") IS NOT NULL THEN
+  IF isWin() THEN
     CALL b.replace("/", ",", 0)
     CALL b.replace("\\", ",", 0)
   ELSE
@@ -1843,7 +1854,7 @@ FUNCTION getURLQueryDict(surl STRING) RETURNS(TStringDict, URI)
   DEFINE idx INT
   DEFINE tok base.StringTokenizer
   DEFINE d TStringDict
-  IF fgl_getenv("WINDIR") IS NOT NULL THEN
+  IF isWin() THEN
     LET surl = replace(surl, "\\", "/")
   END IF
   LET url = URI.create(surl)
@@ -2268,7 +2279,7 @@ FUNCTION openBrowser(url)
 END FUNCTION
 
 FUNCTION isWin()
-  RETURN fgl_getenv("WINDIR") IS NOT NULL
+  RETURN os.Path.separator() == "\\"
 END FUNCTION
 
 FUNCTION isMac()
@@ -2537,14 +2548,24 @@ FUNCTION handleDelayedImage(vmidx INT, ftg FTGetImage INOUT)
 END FUNCTION
 
 FUNCTION handleFTNotFound(vmidx INT, ftg FTGetImage INOUT)
-  DEFINE x INT
-  DEFINE vmName STRING
+  DEFINE x, idx INT
+  DEFINE name, vmName STRING
   MYASSERT(ftg.httpIdx > 0)
   LET x = ftg.httpIdx
   CALL removeImg(vmidx, ftg.*)
-  IF ftg.name.getIndexOf("gbc://", 1) IS NOT NULL THEN
-    LET vmName = ftg.name.subString(7, ftg.name.getLength())
-    CALL log(SFMT("handleFTNotFound: retry FT request with:%1", vmName))
+  LET name = ftg.name
+  CALL log(SFMT("handleFTNotFound: %1", name))
+  CASE
+    WHEN name.getIndexOf("gbc://", 1) == 1
+      LET vmName = name.subString(7, name.getLength())
+    WHEN name.getIndexOf("webcomponents/", 1) == 1
+      LET idx = name.getIndexOf("/", 15)
+      IF idx > 0 THEN
+        LET vmName = name.subString(idx + 1, name.getLength())
+      END IF
+  END CASE
+  IF vmName IS NOT NULL THEN
+    CALL log(SFMT("  retry FT request with:%1", vmName))
     CALL checkRequestFT(x, vmidx, vmName)
   ELSE
     CALL http404(x, ftg.name)
