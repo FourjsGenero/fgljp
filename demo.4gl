@@ -32,7 +32,7 @@ FUNCTION showForm()
   OPEN FORM f FROM "demo"
   DISPLAY FORM f
   DISPLAY "Entry" TO entry
-  DISPLAY "WebComponent" TO w
+  DISPLAY sfmt('{"value": "WebComponent", "src":"%1"}',ui.Interface.filenameToURI("logo.png")) TO w
 END FUNCTION
 
 FUNCTION fc()

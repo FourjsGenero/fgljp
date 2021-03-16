@@ -5,11 +5,21 @@ LAYOUT(TEXT="This is a simple form")
 GRID 
 {
 Entry       [entry       ]
-Webcomponent[w           ]
-            [            ]
+             You should see 'Webcomponent'
+             and the logo below
+Webcomponent[w                                   ]
+            [                                    ]
+            [                                    ]
+            [                                    ]
+            [                                    ]
+             You should see the FourJs logo below
+Image       [logo                                ]
+            [                                    ]
+            [                                    ]
 
 }
 END
 ATTRIBUTES
 entry=FORMONLY.entry;
 WEBCOMPONENT w=FORMONLY.w,COMPONENTTYPE="input",SIZEPOLICY=FIXED,STRETCH=NONE;
+IMAGE logo: IMAGE="logo",AUTOSCALE;

@@ -1,5 +1,6 @@
 //simulates a normal input field in a webco 
 var input=document.getElementById("theinput");
+var img=document.getElementById("theimg");
 
 function OnKeyDown(ev) {
    mylog("OnKeyDown keycode:"+ev.keyCode);
@@ -31,8 +32,10 @@ onICHostReady =function(version) {
   }
                                 
   gICAPI.onData=function(data) {
+    var o=JSON.parse(data)
     mylog("gICAPI.onData:"+data);
-    input.value=data;
+    input.value=o.value;
+    img.src=o.src;
   }
 
   gICAPI.onProperty=function(p) { 

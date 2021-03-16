@@ -108,6 +108,7 @@ TYPE TConnectionRec RECORD
   httpIdx INT, --http connection waiting
   VmCmd STRING, --last VM cmd
   wait BOOLEAN, --token for socket communication
+  FTV2 BOOLEAN, --VM has filetransfer V2
   ftNum INT, --current FT num
   writeNum INT, --FT id1
   writeNum2 INT, --FT id2
@@ -987,8 +988,45 @@ FUNCTION sendToClient(x INT, vmCmd STRING, procId STRING, vmclose BOOLEAN)
   CALL writeResponseInt2(x, vmCmd, "text/plain; charset=UTF-8", hdrs, "200 OK")
 END FUNCTION
 
+FUNCTION handleGBCPath(x INT, path STRING)
+  DEFINE fname STRING
+  DEFINE cut BOOLEAN
+  DEFINE idx1, idx2, idx3 INT
+  LET cut = TRUE
+  IF path.getIndexOf("/gbc/index.html", 1) == 1 THEN
+    CALL setAppCookie(x, path)
+  END IF
+  IF _opt_program IS NOT NULL THEN
+    LET fname = path.subString(6, path.getLength())
+    LET fname = cut_question(fname)
+    LET fname = gbcResourceName(fname)
+    --DISPLAY "fname:", fname
+    CALL processFile(x, fname, TRUE)
+  ELSE
+    IF path.getIndexOf("/gbc/webcomponents/", 1) == 1 THEN
+      LET fname = path.subString(20, path.getLength())
+      LET idx1 = fname.getIndexOf("/", 20)
+      IF idx1 > 0
+          AND (idx2 := fname.getIndexOf("/", idx1)) > 0
+          AND (idx3 := fname.getIndexOf("/__VM__/", idx1)) == idx2 THEN
+        LET fname = fname.subString(idx3 + 1, fname.getLength())
+        LET cut = FALSE --we pass the whole URL
+      END IF
+    ELSE
+      IF path.getIndexOf("/gbc/__VM__/", 1) == 1 THEN
+        LET fname = path.subString(6, path.getLength())
+        LET cut = FALSE --we pass the whole URL
+      ELSE
+        LET fname = "gbc://", path.subString(6, path.getLength())
+      END IF
+    END IF
+    LET fname = IIF(cut, cut_question(fname), fname)
+    CALL processRemoteFile(x, fname)
+  END IF
+END FUNCTION
+
 FUNCTION httpHandler(x INT)
-  DEFINE text, path, fname STRING
+  DEFINE text, path STRING
   LET path = _s[x].path
   CALL log(SFMT("httpHandler '%1' for:%2", path, printSel(x)))
   CASE
@@ -998,24 +1036,7 @@ FUNCTION httpHandler(x INT)
     WHEN path.getIndexOf("/ua/", 1) == 1 --ua proto
       CALL handleUAProto(x, path)
     WHEN path.getIndexOf("/gbc/", 1) == 1 --gbc asset
-      IF path.getIndexOf("/gbc/index.html", 1) == 1 THEN
-        CALL setAppCookie(x, path)
-      END IF
-      IF _opt_program IS NOT NULL THEN
-        LET fname = path.subString(6, path.getLength())
-        LET fname = cut_question(fname)
-        LET fname = gbcResourceName(fname)
-        --DISPLAY "fname:", fname
-        CALL processFile(x, fname, TRUE)
-      ELSE
-        IF path.getIndexOf("/gbc/webcomponents/", 1) == 1 THEN
-          LET fname = path.subString(20, path.getLength())
-        ELSE
-          LET fname = "gbc://", path.subString(6, path.getLength())
-        END IF
-        LET fname = cut_question(fname)
-        CALL processRemoteFile(x, fname)
-      END IF
+      CALL handleGBCPath(x, path)
       RETURN
     OTHERWISE
       IF NOT findFile(x, path) THEN
@@ -1203,9 +1224,12 @@ FUNCTION writeToVMWithProcId(s STRING, procId STRING)
 END FUNCTION
 
 --we need to correct encapsulation
-FUNCTION handleClientMeta(meta STRING)
+FUNCTION handleClientMeta(vmidx INT, meta STRING)
+  DEFINE ftreply STRING
   LET meta = replace(meta, '{encapsulation "0"}', '{encapsulation "1"}')
-  LET meta = replace(meta, '{filetransfer "0"}', '{filetransfer "1"}')
+  LET ftreply = IIF(_s[vmidx].FTV2, "2", "1")
+  LET meta =
+      replace(meta, '{filetransfer "0"}', SFMT('{filetransfer "%1"}', ftreply))
   --DISPLAY "meta:", meta
   RETURN meta
 END FUNCTION
@@ -1216,7 +1240,7 @@ FUNCTION writeToVM(vmidx INT, s STRING)
     IF NOT _s[vmidx].clientMetaSent THEN
       MYASSERT(s.getIndexOf("meta ", 1) == 1)
       LET _s[vmidx].clientMetaSent = TRUE
-      LET s = handleClientMeta(s)
+      LET s = handleClientMeta(vmidx, s)
     END IF
     CALL writeToVMEncaps(vmidx, s)
   ELSE
@@ -1359,6 +1383,7 @@ END FUNCTION
 
 FUNCTION handleMetaSel(vmidx INT, line STRING)
   DEFINE pp, procIdWaiting, sessId, encaps, compression, rtver STRING
+  DEFINE ftV STRING
   DEFINE ppidx INT
   DEFINE children TStringArr
   LET _s[vmidx].isVM = TRUE
@@ -1371,6 +1396,8 @@ FUNCTION handleMetaSel(vmidx INT, line STRING)
   IF compression IS NOT NULL THEN
     MYASSERT(compression.equals("none")) --avoid that someone enables zlib
   END IF
+  LET ftV = extractMetaVar(line, "filetransferVersion", FALSE)
+  LET _s[vmidx].FTV2 = IIF(ftV == "2", TRUE, FALSE)
   LET rtver = extractMetaVar(line, "runtimeVersion", TRUE)
   LET _s[vmidx].vmVersion = parseVersion(rtver)
   LET _s[vmidx].procId = extractProcId(extractMetaVar(line, "procId", TRUE))
@@ -1582,7 +1609,9 @@ FUNCTION readEncaps(vmidx INT, dIn DataInputStream)
   CATCH
     LET err = err_get(status)
     --DISPLAY "err:'",err,"'"
-    IF err.equals("Java exception thrown: java.io.EOFException.\n") THEN
+    IF err.equals("Java exception thrown: java.io.EOFException.\n")
+        OR err.equals(
+            "Java exception thrown: java.io.IOException: Connection reset by peer.\n") THEN
       --DISPLAY "!!!readEncaps EOF!!!"
       RETURN TAuiData, ""
     END IF
@@ -1854,11 +1883,9 @@ FUNCTION getURLQueryDict(surl STRING) RETURNS(TStringDict, URI)
   DEFINE tok base.StringTokenizer
   DEFINE d TStringDict
   LET surl = replace(surl, " ", "+")
-  IF isWin() THEN
-    LET surl = replace(surl, "\\", "/")
-    IF surl.getIndexOf(":", 1) == 2 THEN --drive letter
-      LET surl = "http:", surl.subString(3, surl.getLength())
-    END IF
+  LET surl = replace(surl, "\\", "/")
+  IF surl.getIndexOf(":", 1) == 2 THEN --drive letter
+    LET surl = "http:", surl.subString(3, surl.getLength())
   END IF
   LET url = URI.create(surl)
   LET q = url.getQuery()
@@ -2008,6 +2035,9 @@ END FUNCTION
 
 FUNCTION limitPrintStr(s STRING)
   DEFINE len INT
+  IF NOT _verbose THEN
+    RETURN ""
+  END IF
   LET len = s.getLength()
   IF len > 323 THEN
     RETURN s.subString(1, 160) || "..." || s.subString(len - 160, len)
@@ -2634,17 +2664,22 @@ FUNCTION checkRequestFT(x INT, vmidx INT, fname STRING)
   DEFINE ftg FTGetImage
   DEFINE cached, ft2 BOOLEAN
   DEFINE FTs FTList
-  DEFINE cacheName STRING
+  DEFINE realName, cachedName STRING
   IF fname IS NULL THEN
     DISPLAY "No FT value for:", vmidx
     RETURN
   END IF
-  CALL checkFT2(fname) RETURNING cached, cacheName, ft2
+  CALL checkFT2(fname) RETURNING cached, realName, ft2
   IF cached THEN --we have the file already in the cache
-    --DISPLAY "checkRequestFT cached"
-    CALL processFile(x, cacheName, TRUE)
+    LET cachedName = cacheFileName(realName)
+    CALL log(
+        SFMT("checkRequestFT got cached realName:%1 with:%2",
+            realName, cachedName))
+    CALL processFile(x, cachedName, TRUE)
     CALL finishHttp(x)
     RETURN
+  ELSE
+    LET fname = realName
   END IF
   MYASSERT(_s[vmidx].ftNum IS NOT NULL)
   LET _s[vmidx].ftNum = _s[vmidx].ftNum - 1
@@ -2663,8 +2698,6 @@ FUNCTION checkRequestFT(x INT, vmidx INT, fname STRING)
   IF NOT _s[vmidx].state = S_ACTIVE THEN
     RETURN
   END IF
-
-  --IF qidx>0 THEN
   CALL lookupNextImage(vmidx)
 END FUNCTION
 
@@ -2675,13 +2708,16 @@ FUNCTION removeImg(vmidx INT, ftg FTGetImage)
   --DISPLAY "before removal:", util.JSON.stringify(_s[vmidx].FTs)
   CALL log(
       SFMT("removeImg:%1 num:%2 len:%3, FTs:%4",
-          ftg.name, ftg.num, FTs.getLength(), util.JSON.stringify(FTs)))
+          ftg.name,
+          ftg.num,
+          FTs.getLength(),
+          IIF(_verbose, util.JSON.stringify(FTs), "")))
   FOR i = 1 TO FTs.getLength()
     --remove the same number but also pending images with the same name
     IF FTs[i].num == ftg.num OR FTs[i].name == ftg.name THEN
       CALL log(
           SFMT("  removed:%1 at:%2:%3",
-              ftg.name, i, util.JSON.stringify(FTs[i])))
+              ftg.name, i, IIF(_verbose, util.JSON.stringify(FTs[i]), "")))
       CALL FTs.deleteElement(i)
       LET i = i - 1
     END IF
