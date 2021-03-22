@@ -20,6 +20,7 @@ IMPORT JAVA java.io.IOException
 IMPORT JAVA java.io.InputStream
 IMPORT JAVA java.io.InputStreamReader
 IMPORT JAVA java.io.BufferedReader
+IMPORT JAVA java.io.ByteArrayOutputStream
 IMPORT JAVA java.nio.channels.SelectionKey
 IMPORT JAVA java.nio.channels.Selector
 IMPORT JAVA java.nio.channels.ServerSocketChannel
@@ -77,6 +78,9 @@ CONSTANT S_FINISH = "Finish"
 
 CONSTANT APP_COOKIE = "XFJsApp"
 
+CONSTANT GO_OUT = TRUE
+CONSTANT CLOSED = TRUE
+
 TYPE FTGetImage RECORD
   name STRING,
   num INT,
@@ -123,13 +127,16 @@ TYPE TConnectionRec RECORD
   FTs FTList, --list of running file transfers
   --meta STRING,
   clientMetaSent BOOLEAN,
+  putfile STRING,
   isHTTP BOOLEAN, --HTTP related members
   path STRING,
   method STRING,
   body STRING,
   appCookie STRING,
+  cdattachment BOOLEAN,
   headers TStringDict,
   contentLen INT,
+  contentType STRING,
   clitag STRING,
   newtask BOOLEAN
 END RECORD
@@ -184,6 +191,7 @@ DEFINE _opt_any BOOLEAN
 DEFINE _opt_gdc BOOLEAN
 DEFINE _opt_runonserver BOOLEAN
 DEFINE _opt_nostart BOOLEAN
+DEFINE _opt_clearcache BOOLEAN
 DEFINE _logChan base.Channel
 DEFINE _opt_program, _opt_program1 STRING
 DEFINE _verbose BOOLEAN
@@ -221,6 +229,9 @@ MAIN
   --DEFINE clientkey SelectionKey
   LET _starttime = CURRENT
   CALL parseArgs()
+  IF _opt_clearcache THEN
+    CALL clearCache()
+  END IF
   LET _utf8 = StandardCharsets.UTF_8
   LET _encoder = _utf8.newEncoder()
   LET _decoder = _utf8.newDecoder()
@@ -375,9 +386,9 @@ END FUNCTION
 FUNCTION setup_program(priv STRING, pub STRING, port INT)
   DEFINE s STRING
   LET _owndir = os.Path.fullPath(os.Path.dirName(arg_val(0)))
-  LET _privdir = os.Path.join(_owndir, "priv")
   LET _progdir = os.Path.fullPath(os.Path.dirName(_opt_program1))
   LET _pubdir = _progdir
+  LET _privdir = os.Path.join(_progdir, "priv")
   CALL os.Path.mkdir(_privdir) RETURNING status
   CALL fgl_setenv("FGLSERVER", SFMT("localhost:%1", port - 6400))
   CALL fgl_setenv("FGL_PRIVATE_DIR", _privdir)
@@ -385,6 +396,7 @@ FUNCTION setup_program(priv STRING, pub STRING, port INT)
   CALL fgl_setenv("FGL_PUBLIC_IMAGEPATH", ".")
   CALL fgl_setenv("FGL_PRIVATE_URL_PREFIX", priv)
   CALL fgl_setenv("FGL_PUBLIC_URL_PREFIX", pub)
+  --CALL fgl_setenv("FGLGUIDEBUG", "1")
   --should work on both Win and Unix
   --LET s= "cd ",_progdir,"&&fglrun ",os.Path.baseName(prog)
   LET s = SFMT("fglrun %1", _opt_program)
@@ -495,6 +507,12 @@ PRIVATE FUNCTION parseArgs()
   LET o[i].arg_type = mygetopt.NONE
 
   LET i = o.getLength() + 1
+  LET o[i].name = "clear-cache"
+  LET o[i].description = "Clears the file transfer cache"
+  LET o[i].opt_char = "x"
+  LET o[i].arg_type = mygetopt.NONE
+
+  LET i = o.getLength() + 1
   LET o[i].name = "listen-any"
   LET o[i].description = "fgljp is reachable from outside"
   LET o[i].opt_char = "a"
@@ -525,6 +543,8 @@ PRIVATE FUNCTION parseArgs()
         LET _opt_gdc = TRUE
       WHEN 'r'
         LET _opt_runonserver = TRUE
+      WHEN 'x'
+        LET _opt_clearcache = TRUE
       WHEN 'X'
         LET _opt_autoclose = TRUE
       WHEN 'a'
@@ -653,10 +673,15 @@ END FUNCTION
 
 FUNCTION parseHttpLine(x INT, s STRING)
   DEFINE a DYNAMIC ARRAY OF STRING
+  DEFINE path STRING
   LET s = removeCR(s)
   LET a = splitHTTPLine(s)
   LET _s[x].method = a[1]
-  LET _s[x].path = a[2]
+  LET path = a[2]
+  IF path.getIndexOf("Disposition=attachment", 1) > 0 THEN
+    LET _s[x].cdattachment = TRUE
+  END IF
+  LET _s[x].path = path
   CALL log(SFMT("parseHttpLine:%1 %2", s, printSel(x)))
   IF a[3] <> "HTTP/1.1" THEN
     CALL myErr(SFMT("'%1' must be HTTP/1.1", a[3]))
@@ -710,10 +735,15 @@ FUNCTION parseHttpHeader(x INT, s STRING)
       CALL parseCookies(x, val)
     WHEN "content-length"
       LET _s[x].contentLen = val
-      --DISPLAY "Content-Length:", _sel.contentLen
+      --DISPLAY "Content-Length:",_s[x].contentLen
+    WHEN "content-type"
+      LET _s[x].contentType = val
+      --DISPLAY "Content-Type:", _s[x].contentType
     WHEN "if-none-match"
       LET _s[x].clitag = val
       --DISPLAY "If-None-Match", _sel.clitag
+    WHEN "x-fourjs-lockfile"
+      --DISPLAY ">>>>>>>>>>>>>>x-fourjs-lockfile"
   END CASE
   LET _s[x].headers[key] = val
 END FUNCTION
@@ -812,7 +842,6 @@ FUNCTION handleUAProto(x INT, path STRING)
   DEFINE url URI
   LET qidx = path.getIndexOf("?", 1)
   LET qidx = IIF(qidx > 0, qidx, path.getLength() + 1)
-
   CASE
     WHEN path.getIndexOf("/ua/r/", 1) == 1
       LET procId = path.subString(7, qidx - 1)
@@ -845,8 +874,10 @@ FUNCTION handleUAProto(x INT, path STRING)
       LET body = _s[x].body
       --DISPLAY "POST body:'", body, "'"
       IF body.getLength() > 0 THEN
-        IF NOT writeToVMWithProcId(body, procId) THEN
-          CALL http404(x, path)
+        IF NOT writeToVMWithProcId(x, body, procId) THEN
+          IF NOT _s[x].state.equals(S_WAITFORVM) THEN
+            CALL http404(x, path)
+          END IF
           RETURN
         END IF
       END IF
@@ -949,6 +980,7 @@ FUNCTION sendToClient(x INT, vmCmd STRING, procId STRING, vmclose BOOLEAN)
   LET hdrs[hdrs.getLength() + 1] = "X-FourJs-WebComponent: webcomponents"
   LET hdrs[hdrs.getLength() + 1] = "X-FourJs-Development: true"
   LET hdrs[hdrs.getLength() + 1] = "X-FourJs-Server: GAS/3.20.14-202012101044"
+  LET hdrs[hdrs.getLength() + 1] = "X-FourJs-Server-Features: ft-lock-file"
   --LET pp=_selDict[procId].procIdParent
   --IF pp IS NULL OR  NOT _selDict.contains(pp) THEN
   LET hdrs[hdrs.getLength() + 1] = SFMT("X-FourJs-Id: %1", procId)
@@ -1038,6 +1070,8 @@ FUNCTION httpHandler(x INT)
     WHEN path.getIndexOf("/gbc/", 1) == 1 --gbc asset
       CALL handleGBCPath(x, path)
       RETURN
+    WHEN _s[x].cdattachment
+      CALL handleCDAttachment(x)
     OTHERWISE
       IF NOT findFile(x, path) THEN
         CALL http404(x, path)
@@ -1052,9 +1086,12 @@ FUNCTION findFile(x INT, path STRING)
   IF qidx > 0 THEN
     LET path = path.subString(1, qidx - 1)
   END IF
+  LET path = util.Strings.urlDecode(path)
   LET relpath = ".", path
   IF NOT os.Path.exists(relpath) THEN
-    CALL log(SFMT("findFile:relpath '%1' doesn't exist", relpath))
+    CALL log(
+        SFMT("findFile:relpath '%1' doesn't exist, pwd:%2",
+            relpath, os.Path.pwd()))
     IF _opt_program IS NULL THEN --ask VM
       CALL processRemoteFile(x, path)
       RETURN TRUE
@@ -1097,29 +1134,37 @@ FUNCTION readTextFile(fname)
   RETURN res
 END FUNCTION
 
-FUNCTION processRemoteFile(x INT, fname STRING)
-  DEFINE vmidx INT
+FUNCTION vmidxFromAppCookie(x INT, fname STRING)
   DEFINE procId STRING
+  DEFINE vmidx INT
   LET procId = _s[x].appCookie
   IF procId IS NULL THEN
     CALL log(
-        SFMT("processRemoteFile:no App Cookie set for:%1,%2",
+        SFMT("vmidxFromAppCookie:no App Cookie set for:%1,%2",
             fname, printSel(x)))
-    CALL http404(x, fname)
-    RETURN
+    RETURN 0
   END IF
   IF NOT _selDict.contains(procId) THEN
     CALL log(
-        SFMT("processRemoteFile:no app anymore for:%1,procId:%2,%3",
+        SFMT("vmidxFromAppCookie:no app anymore for:%1,procId:%2,%3",
             fname, procId, printSel(x)))
+    RETURN 0
+  END IF
+  LET vmidx = _selDict[procId]
+  CALL log(
+      SFMT("vmidxFromAppCookie %1,procId:%2,vmidx:%3",
+          printSel(x), procId, vmidx))
+  RETURN vmidx
+END FUNCTION
+
+FUNCTION processRemoteFile(x INT, fname STRING)
+  DEFINE vmidx INT
+  LET vmidx = vmidxFromAppCookie(x, fname)
+  IF vmidx < 1 THEN
     CALL http404(x, fname)
     RETURN
   END IF
   LET _s[x].state = S_WAITFORVM
-  LET vmidx = _selDict[procId]
-  CALL log(
-      SFMT("processRemoteFile %1,procId:%2,vmidx:%3",
-          printSel(x), procId, vmidx))
   CALL checkRequestFT(x, vmidx, fname)
 END FUNCTION
 
@@ -1132,7 +1177,13 @@ FUNCTION processFile(x INT, fname STRING, cache BOOLEAN)
     CALL http404(x, fname)
     RETURN
   END IF
-  --DISPLAY "processFile:", fname
+  IF _s[x].method == "POST" THEN
+    --DISPLAY "processFile:", fname, " return 200 OK"
+    LET hdrs = getCacheHeaders(FALSE, "")
+    CALL writeResponseInt2(x, "", "", hdrs, "200 OK")
+    RETURN
+  END IF
+  --DISPLAY "!!!!!!processFile:", fname
   IF cache THEN
     LET etag = SFMT("%1.%2", os.Path.mtime(fname), os.Path.size(fname))
     IF _s[x].clitag IS NOT NULL AND _s[x].clitag == etag THEN
@@ -1143,7 +1194,7 @@ FUNCTION processFile(x INT, fname STRING, cache BOOLEAN)
   LET ext = os.Path.extension(fname)
   LET ct = NULL
   CASE
-    WHEN ext == "html" OR ext == "css" OR ext == "js"
+    WHEN ext == "html" OR ext == "css" OR ext == "js" OR ext == "txt"
       CASE
         WHEN ext == "html"
           LET ct = "text/html"
@@ -1151,11 +1202,15 @@ FUNCTION processFile(x INT, fname STRING, cache BOOLEAN)
           LET ct = "application/x-javascript"
         WHEN ext == "css"
           LET ct = "text/css"
+        WHEN ext == "txt"
+          LET ct = "text/plain"
       END CASE
       LET txt = readTextFile(fname)
       LET hdrs = getCacheHeaders(cache, etag)
+      --DISPLAY "processTextFile:", fname, " ct:", ct
       CALL writeResponseCtHdrs(x, txt, ct, hdrs)
     OTHERWISE
+      LET ct = "application/octet-stream"
       CASE
         WHEN ext == "gif"
           LET ct = "image/gif"
@@ -1165,6 +1220,7 @@ FUNCTION processFile(x INT, fname STRING, cache BOOLEAN)
           LET ct = "application/octet-stream"
       END CASE
       LET hdrs = getCacheHeaders(cache, etag)
+      --DISPLAY "processFile:", fname, " ct:", ct
       CALL writeResponseFileHdrs(x, fname, ct, hdrs)
   END CASE
 END FUNCTION
@@ -1183,6 +1239,7 @@ FUNCTION http404(x INT, fn STRING)
   LET content =
       SFMT("<!DOCTYPE html><html><body>Can't find: '%1'</body></html>", fn)
   CALL log(SFMT("http404:%1", fn))
+  LET _s[x].cdattachment = FALSE
   CALL writeResponseInt(x, content, "text/html", "404 Not Found")
 END FUNCTION
 
@@ -1213,12 +1270,18 @@ FUNCTION writeHTTP(x INT, s STRING)
   END TRY
 END FUNCTION
 
-FUNCTION writeToVMWithProcId(s STRING, procId STRING)
+FUNCTION writeToVMWithProcId(x INT, s STRING, procId STRING)
   DEFINE vmidx INT
   IF NOT _selDict.contains(procId) THEN
     RETURN FALSE
   END IF
   LET vmidx = _selDict[procId]
+  IF _s[vmidx].putfile IS NOT NULL THEN
+    --DISPLAY ">>>>hold reply:'", s, "' because of putfile"
+    LET _s[x].state = S_WAITFORVM
+    LET _s[x].procId = procId
+    RETURN FALSE
+  END IF
   CALL writeToVM(vmidx, s)
   RETURN TRUE
 END FUNCTION
@@ -1288,8 +1351,62 @@ FUNCTION writeResponseInt(x INT, content STRING, ct STRING, code STRING)
   CALL writeResponseInt2(x, content, ct, headers, code)
 END FUNCTION
 
+FUNCTION handleCDAttachment(x INT)
+  DEFINE vmidx, i INT
+  DEFINE path STRING
+  DEFINE hdrs TStringArr
+  LET path = _s[x].path
+  LET vmidx = vmidxFromAppCookie(x, path)
+  IF vmidx < 1 THEN
+    CALL http404(x, path)
+    RETURN
+  END IF
+  IF NOT _s[vmidx].putfile.equals(path) THEN
+    LET _s[vmidx].putfile = path
+    LET _s[x].cdattachment = FALSE
+    LET hdrs = getCacheHeaders(FALSE, "")
+    --DISPLAY ">>>>>send 204 No Content:", printSel(x)
+    CALL writeResponseInt2(x, "", "", hdrs, "204 No Content")
+  ELSE
+    LET _s[vmidx].putfile = NULL
+    --actually deliver the putfile
+    IF NOT findFile(x, path) THEN
+      CALL http404(x, path)
+    END IF
+
+    FOR i = 1 TO _s.getLength()
+      IF _s[i].state == S_WAITFORVM
+          AND (vmidx := vmidxFromAppCookie(x, path)) > 0 THEN
+        DISPLAY SFMT("!!!!found x:%1 for vmidx:%2 body:%3 ",
+            i, vmidx, _s[i].body, printSel(i))
+        MYASSERT(_s[i].procId IS NOT NULL)
+        MYASSERT(writeToVMWithProcId(x, _s[i].body, _s[i].procId) == TRUE)
+        LET _s[vmidx].httpIdx = i --mark the connection for VM answer
+        EXIT FOR
+      END IF
+    END FOR
+  END IF
+END FUNCTION
+
+FUNCTION checkCDAttachment(x INT, hdrs TStringArr)
+  DEFINE qidx INT
+  DEFINE path, fname STRING
+  IF NOT _s[x].cdattachment THEN
+    RETURN
+  END IF
+  LET path = _s[x].path
+  LET qidx = path.getIndexOf("?", 1)
+  LET path = IIF(qidx > 0, path.subString(1, qidx - 1), path)
+  LET path = util.Strings.urlDecode(path)
+  LET fname = os.Path.baseName(path)
+  --DISPLAY ">>>>>>>>>>>>send attach:", path, ",fname:", fname
+  LET qidx = hdrs.getLength() + 1
+  LET hdrs[qidx] = SFMT('Content-Disposition: attachment; filename="%1"', fname)
+END FUNCTION
+
 FUNCTION writeHTTPHeaders(x INT, headers TStringArr)
   DEFINE i, len INT
+  CALL checkCDAttachment(x, headers)
   LET len = headers.getLength()
   FOR i = 1 TO len
     CALL writeHTTPLine(x, headers[i])
@@ -1322,7 +1439,9 @@ FUNCTION writeResponseInt2(
   LET content_length = content.getLength()
   CALL writeHTTPHeaders(x, headers)
   CALL writeHTTPLine(x, SFMT("Content-Length: %1", content_length))
-  CALL writeHTTPLine(x, SFMT("Content-Type: %1", ct))
+  IF ct IS NOT NULL THEN
+    CALL writeHTTPLine(x, SFMT("Content-Type: %1", ct))
+  END IF
   CALL writeHTTPLine(x, "")
   CALL writeHTTP(x, content)
 END FUNCTION
@@ -1581,6 +1700,7 @@ END FUNCTION
 FUNCTION handleConnectionInt(c INT, key SelectionKey, chan SocketChannel)
   DEFINE dIn DataInputStream
   DEFINE go_out, closed BOOLEAN
+  DEFINE line STRING
   LET dIn = _s[c].dIn
   --DISPLAY "before: buf pos:",buf.position(),",caApacity:",buf.capacity(),",limit:",buf.limit()
   CALL configureBlocking(key, chan)
@@ -1589,7 +1709,14 @@ FUNCTION handleConnectionInt(c INT, key SelectionKey, chan SocketChannel)
       CALL handleWaitContent(c, dIn)
       EXIT WHILE
     END IF
-    CALL handleReadLine(c, dIn) RETURNING go_out, closed
+    CALL ReadLine(c, dIn) RETURNING line, go_out
+    IF NOT go_out THEN
+      IF line.getLength() == 0 THEN
+        CALL handleEmptyLine(c) RETURNING go_out, closed
+      ELSE
+        CALL handleLine(c, line) RETURNING go_out
+      END IF
+    END IF
   END WHILE
   IF NOT closed THEN
     CALL checkReRegister(c)
@@ -1599,6 +1726,8 @@ FUNCTION handleConnectionInt(c INT, key SelectionKey, chan SocketChannel)
           printSel(c), IIF(closed, " closed", "")))
 END FUNCTION
 
+--we need to read the encapsulated VM data and decice
+--upon the type byte what is to do
 FUNCTION readEncaps(vmidx INT, dIn DataInputStream)
   DEFINE s1, s2, bodySize, dataSize INT
   DEFINE type TINYINT
@@ -1620,9 +1749,10 @@ FUNCTION readEncaps(vmidx INT, dIn DataInputStream)
   LET bodySize = ntohl(s1)
   LET s2 = dIn.readInt()
   LET dataSize = ntohl(s2)
-  --DISPLAY sfmt("s1:%1,s2:%2,bodySize:%3,dataSize:%4",s1,s2,bodySize,dataSize)
-  IF (bodySize != dataSize) THEN
-    DISPLAY "readEncaps bodySize:", bodySize, ",dataSize:", dataSize
+  --DISPLAY SFMT("s1:%1,s2:%2,bodySize:%3,dataSize:%4",
+  --    s1, s2, bodySize, dataSize)
+  IF (bodySize <> dataSize) THEN
+    DISPLAY "!!!!!!readEncaps bodySize:", bodySize, "<> dataSize:", dataSize
   END IF
   MYASSERT(bodySize == dataSize)
   LET type = dIn.readByte()
@@ -1631,7 +1761,6 @@ FUNCTION readEncaps(vmidx INT, dIn DataInputStream)
       LET line = dIn.readLine()
       CALL lookupNextImage(vmidx)
     WHEN type = TFileTransfer
-      --DISPLAY "handleFT"
       CALL handleFT(vmidx, dIn, dataSize)
     OTHERWISE
       CALL myErr(SFMT("unhandled encaps type:%1", type))
@@ -1639,57 +1768,122 @@ FUNCTION readEncaps(vmidx INT, dIn DataInputStream)
   RETURN type, line
 END FUNCTION
 
---main HTPP/VM connection state machine
-FUNCTION handleReadLine(c INT, dIn DataInputStream)
+FUNCTION didReadCompleteVMCmd(buf ByteBuffer)
+  DEFINE b1, b2, b3 TINYINT
+  DEFINE pos INT
+  LET pos = buf.position()
+  --DISPLAY sfmt("didReadCompleteVM pos:%1,limit:%2,capacity:%3",buf.position(),buf.limit(),buf.capacity())
+  IF pos < 3 THEN
+    RETURN FALSE
+  END IF
+  CALL buf.position(pos - 3)
+  --check for '}}\n', read the last 3 bytes
+  --its very unlikely that this is an end of another UTF-8 sequence
+  IF (b1 := buf.get()) == 125
+      AND (b2 := buf.get()) == 125
+      AND (b3 := buf.get()) == 10 THEN
+    RETURN TRUE
+  END IF
+  CALL buf.position(pos)
+  --DISPLAY "b1:",ASCII(b1),",b2:",ASCII(b2),",b3:",ASCII(b3)
+  RETURN FALSE
+END FUNCTION
+
+--unfortunately we can't use neither
+--DataInputStream.readLine nor
+--BufferedReader.readLine because both stop already at '\r'
+--this forces us to read byte chunks until we discover '}}\n'
+FUNCTION readLineFromVM(vmindex INT)
+  DEFINE buf, newbuf ByteBuffer
+  DEFINE chan SocketChannel
+  DEFINE didRead, newsize, num, len INT
+  DEFINE js java.lang.String
+  DEFINE s STRING
+  LET chan = _s[vmindex].chan
+  LET buf = ByteBuffer.allocate(30000)
+  LET didRead = chan.read(buf)
+  IF didRead == -1 THEN
+    RETURN ""
+  END IF
+  --DISPLAY sfmt("didRead:%1,num:%2,pos:%3,limit:%4",didRead,num,buf.position(),buf.limit())
+  WHILE NOT didReadCompleteVMCmd(buf)
+    IF buf.position() == buf.limit() THEN --need to realloc
+      LET newsize = buf.capacity() * 2
+      LET newbuf = ByteBuffer.allocate(newsize)
+      CALL buf.flip()
+      CALL newbuf.put(buf)
+      MYASSERT(newbuf.position() == buf.capacity())
+      LET buf = newbuf
+    END IF
+    MYASSERT(buf.position() < buf.limit())
+    LET didRead = chan.read(buf)
+    IF didRead == -1 THEN
+      RETURN ""
+    END IF
+    LET num = num + 1
+    --DISPLAY sfmt("didRead:%1,num:%2,pos:%3,limit:%4",didRead,num,buf.position(),buf.limit())
+  END WHILE
+  CALL buf.flip()
+  LET js = _decoder.decode(buf).toString()
+  LET len = js.length()
+  MYASSERT(js.charAt(len - 1) == "\n") --my guess is Java string indexing is a picosecond faster than VM indexing
+  LET s = js.substring(0, len - 1)
+  RETURN s
+END FUNCTION
+
+FUNCTION ReadLine(c INT, dIn DataInputStream)
   DEFINE line STRING
   DEFINE type TINYINT
-  CONSTANT GO_OUT = TRUE
-  CONSTANT CLOSED = TRUE
   IF _s[c].isVM THEN
     IF _opt_program IS NULL AND _s[c].state == S_ACTIVE THEN
       CALL readEncaps(c, dIn) RETURNING type, line
       IF type != TAuiData THEN
         --DISPLAY "-------go out with type:",type
-        RETURN GO_OUT, FALSE
+        RETURN "", GO_OUT
       END IF
-      --DISPLAY "handleReadLine line:'",line,"'"
     ELSE
-      LET line = dIn.readLine() --TODO: buffered reader
+      LET line = readLineFromVM(c)
     END IF
   ELSE
     LET line = dIn.readLine()
   END IF
-  --DISPLAY "line:",limitPrintStr(line)
-  IF line.getLength() == 0 THEN
-    --DISPLAY "line '' isVM:", _s[c].isVM, ",isHTTP:", _s[c].isHTTP
-    IF _s[c].isVM THEN
-      CALL handleVMFinish(c)
+  RETURN line, FALSE
+END FUNCTION
+
+FUNCTION handleEmptyLine(c INT)
+  --DISPLAY "line '' isVM:", _s[c].isVM, ",isHTTP:", _s[c].isHTTP
+  IF _s[c].isVM THEN
+    CALL handleVMFinish(c)
+    RETURN GO_OUT, FALSE
+  ELSE
+    IF NOT _s[c].isHTTP AND NOT _s[c].isVM THEN
+      CALL log(
+          SFMT("handleConnectionInt: ignore empty line for:%1", printSel(c)))
+      CALL closeSel(c)
+      RETURN GO_OUT, CLOSED
+    END IF
+    MYASSERT(_s[c].isHTTP AND _s[c].state == S_HEADERS)
+    IF _s[c].contentLen > 0 THEN
+      LET _s[c].state = S_WAITCONTENT
       RETURN GO_OUT, FALSE
     ELSE
-      IF NOT _s[c].isHTTP AND NOT _s[c].isVM THEN
-        CALL log(
-            SFMT("handleConnectionInt: ignore empty line for:%1", printSel(c)))
-        CALL closeSel(c)
-        RETURN GO_OUT, CLOSED
-      END IF
-      MYASSERT(_s[c].isHTTP AND _s[c].state == S_HEADERS)
-      IF _s[c].contentLen > 0 THEN
-        LET _s[c].state = S_WAITCONTENT
-        RETURN GO_OUT, FALSE
-      ELSE
-        --DISPLAY "Finish of :", _s[c].path
-        LET _s[c].state = S_FINISH
-        CALL httpHandler(c)
-        RETURN GO_OUT, FALSE
-      END IF
+      --DISPLAY "Finish of :", _s[c].path
+      LET _s[c].state = S_FINISH
+      CALL httpHandler(c)
+      RETURN GO_OUT, FALSE
     END IF
   END IF
+END FUNCTION
+
+--main HTPP/VM connection state machine
+FUNCTION handleLine(c INT, line STRING)
+  --DISPLAY SFMT("handleLine:%1,line:%2", c, limitPrintStr(line))
   CASE
     WHEN NOT _s[c].isVM AND NOT _s[c].isHTTP
       CASE
         WHEN line.getIndexOf("meta ", 1) == 1
           CALL handleMetaSel(c, line)
-          RETURN GO_OUT, FALSE
+          RETURN GO_OUT
         WHEN line.getIndexOf("GET ", 1) == 1
             OR line.getIndexOf("PUT ", 1) == 1
             OR line.getIndexOf("POST ", 1) == 1
@@ -1713,25 +1907,209 @@ FUNCTION handleReadLine(c INT, dIn DataInputStream)
         --DISPLAY "<<<<<filetransfer received"
         LET _s[c].state = S_ACTIVE
         CALL lookupNextImage(c)
-        RETURN GO_OUT, FALSE
+        RETURN GO_OUT
       END IF
       LET _s[c].VmCmd = line
       CALL handleVM(c, FALSE)
-      RETURN GO_OUT, FALSE
+      RETURN GO_OUT
     OTHERWISE
       CALL myErr("Unhandled case")
   END CASE
-  RETURN FALSE, FALSE
+  RETURN FALSE
+END FUNCTION
+
+FUNCTION merge2BA(
+    ba ByteArray, prev ByteArray, baRead INT, blen INT, MAXB INT)
+    RETURNS(ByteArray, ByteArray, INT, INT)
+  DEFINE bout ByteArrayOutputStream
+  DEFINE nul ByteArray
+  DEFINE startidx INT
+  MYASSERT(prev IS NOT NULL)
+  LET bout = ByteArrayOutputStream.create()
+  CALL bout.write(prev)
+  CALL bout.write(ba, 0, baRead)
+  LET ba = bout.toByteArray()
+  LET baRead = MAXB + baRead
+  LET startidx = baRead - blen - 2
+  --DISPLAY SFMT("merge2BA to baRead:%1,startidx:%2", baRead, startidx)
+  RETURN ba, nul, baRead, startidx
+END FUNCTION
+
+FUNCTION handleMultiPartUpload(
+    x INT, dIn DataInputStream, path STRING, ct STRING)
+  DEFINE bidx, blen INT
+  DEFINE boundary, line STRING
+  DEFINE tok base.StringTokenizer
+  DEFINE ctlen, state, didRead, startidx, baoff INT
+  DEFINE baRead, toRead, numRead, maxToRead, jslen INT
+  DEFINE merged, ba, prev ByteArray
+  DEFINE fo FileOutputStream
+  DEFINE jstring java.lang.String
+  CONSTANT MAXB = 30000
+  --DEFINE MAXB INT
+  CONSTANT STARTBOUNDARY = 1
+  CONSTANT STARTCONTENT = 2
+  LET ctlen = _s[x].contentLen
+  LET bidx = ct.getIndexOf("boundary=", 1)
+  MYASSERT(bidx > 0)
+  LET boundary = ct.subString(bidx + 9, ct.getLength())
+  --strip off unwanted continuations
+  LET tok = base.StringTokenizer.create(boundary, " \t;")
+  IF tok.hasMoreTokens() THEN
+    LET boundary = tok.nextToken()
+  END IF
+  --start value has 2 dashes more...
+  LET boundary = "--", boundary
+  LET fo = createFO(path)
+  WHILE TRUE
+    --read the headers until the empty line
+    LET line = dIn.readLine()
+    LET numRead = numRead + line.getLength() + 2
+    --DISPLAY "handleMultiPartUpload line:'", line, "'"
+    CASE
+      WHEN line.getIndexOf(boundary, 1) == 1
+        LET state = STARTBOUNDARY
+      WHEN line.getLength() == 0
+        CASE
+          WHEN state == STARTBOUNDARY
+            LET state = STARTCONTENT
+            EXIT WHILE
+          OTHERWISE
+            CALL myErr("invalid state")
+        END CASE
+    END CASE
+  END WHILE
+  --set boundary to the end value
+  LET boundary = "\r\n", boundary, "--"
+  LET blen = boundary.getLength()
+  --LET MAXB = blen + 2
+  LET ba = ByteArray.create(MAXB)
+  --warning: hairy code
+  --we have 2 buffers, ba and prev, and need to delay the write to disk
+  --until we are sure that the boundary isn't contained in the
+  --written buffer
+  WHILE TRUE
+    LET maxToRead = ctlen - numRead
+    LET toRead = MAXB - baRead
+    --DISPLAY sfmt("before read ctlen:%1,maxToRead:%2,toRead:%3",ctlen,maxToRead,toRead)
+    MYASSERT(maxToRead > 0)
+    MYASSERT(toRead > 0)
+    LET toRead = IIF(maxToRead < toRead, maxToRead, toRead)
+    LET didRead = dIn.read(ba, baoff, toRead)
+    LET numRead = numRead + didRead
+    LET maxToRead = ctlen - numRead
+    MYASSERT(maxToRead >= 0)
+    IF didRead <= 0 THEN
+      DISPLAY "handleMultiPartUpload read failed:didRead:", didRead
+      RETURN
+    END IF
+    LET baRead = baoff + didRead
+    LET startidx = baRead - blen - 2
+    IF startidx < 0 THEN
+      IF prev IS NOT NULL THEN
+        --merge the previous array in to be able to
+        --check for the boundary
+        CALL merge2BA(
+            ba, prev, baRead, blen, MAXB)
+            RETURNING ba, prev, baRead, startidx
+      ELSE
+        MYASSERT(baRead < MAXB)
+        LET baoff = baRead
+        CONTINUE WHILE
+      END IF
+    END IF
+    LABEL testboundary:
+    MYASSERT(startidx >= 0)
+    LET jslen = baRead - startidx
+    --DISPLAY SFMT(" create jstring with startidx:%1,jslen:%2,blen:%3",
+    --    startidx, jslen, blen)
+    LET jstring =
+        java.lang.String.create(ba, startidx, jslen, StandardCharsets.US_ASCII)
+    LET bidx = jstring.lastIndexOf(boundary, startidx)
+    --DISPLAY SFMT("bidx:%1,jstring:'%2',boundary:'%3'", bidx, jstring, boundary)
+    IF bidx != -1 THEN
+      --DISPLAY "!!!!!!!do write ba to disk"
+      IF merged IS NOT NULL THEN
+        --DISPLAY "  merged in prev"
+      END IF
+      IF prev IS NOT NULL THEN
+        --DISPLAY "  write also prev"
+        CALL fo.write(prev)
+      END IF
+      CALL fo.write(ba, 0, bidx)
+      EXIT WHILE
+    ELSE
+      --DISPLAY "no boundary found maxToRead:", maxToRead
+      --we didn't find the boundary, now we have 2 cases, either
+      --buf is completely full or we need to repeat until full
+      IF maxToRead == 0 THEN
+        MYASSERT(prev IS NOT NULL)
+        CALL merge2BA(
+            ba, prev, baRead, blen, MAXB)
+            RETURNING ba, prev, baRead, startidx
+        GOTO testboundary
+      END IF
+      IF ba == merged THEN
+        CALL myErr("ba==merged")
+      END IF
+      IF baRead == MAXB THEN
+        --DISPLAY "  create new buf"
+        IF prev IS NOT NULL THEN
+          --DISPLAY " and write prev"
+          CALL fo.write(prev)
+        END IF
+        LET prev = ba
+        LET ba = ByteArray.create(MAXB)
+        LET baRead = 0
+        LET baoff = 0
+      ELSE
+        MYASSERT(baRead < MAXB)
+        LET baoff = baRead
+      END IF
+    END IF
+  END WHILE
+  CALL fo.close()
+END FUNCTION
+
+FUNCTION createFO(path STRING)
+  DEFINE fo FileOutputStream
+  LET path = ".", path
+  LET fo = FileOutputStream.create(path);
+  RETURN fo
+END FUNCTION
+
+FUNCTION handleSimplePost(x INT, dIn DataInputStream, path STRING)
+  DEFINE fo FileOutputStream
+  DEFINE bytearr ByteArray
+  --DEFINE jstring java.lang.String
+  LET bytearr = ByteArray.create(_s[x].contentLen)
+  CALL dIn.readFully(bytearr)
+  --LET jstring = java.lang.String.create(bytearr, StandardCharsets.UTF_8)
+  --DISPLAY "  bytearr:", jstring
+  LET fo = createFO(path)
+  CALL fo.write(bytearr)
+  CALL fo.close()
 END FUNCTION
 
 FUNCTION handleWaitContent(x INT, dIn DataInputStream)
   DEFINE bytearr ByteArray
   DEFINE jstring java.lang.String
-  CALL log(SFMT("handleWaitContent %1, read:%2", _s[x].path, _s[x].contentLen))
-  LET bytearr = ByteArray.create(_s[x].contentLen)
-  CALL dIn.readFully(bytearr)
-  LET jstring = java.lang.String.create(bytearr, StandardCharsets.UTF_8)
-  LET _s[x].body = jstring
+  DEFINE path, ct STRING
+  LET path = _s[x].path
+  CALL log(SFMT("handleWaitContent %1, read:%2", path, _s[x].contentLen))
+  IF path.getIndexOf("/ua/", 1) == 1 THEN
+    LET bytearr = ByteArray.create(_s[x].contentLen)
+    CALL dIn.readFully(bytearr)
+    LET jstring = java.lang.String.create(bytearr, StandardCharsets.UTF_8)
+    LET _s[x].body = jstring
+  ELSE
+    LET ct = _s[x].contentType
+    IF ct.getIndexOf("multipart/form-data", 1) > 0 THEN
+      CALL handleMultiPartUpload(x, dIn, path, ct)
+    ELSE
+      CALL handleSimplePost(x, dIn, path)
+    END IF
+  END IF
   {
   IF _s[x].body.getIndexOf("GET", 1) > 0
       OR _s[x].body.getIndexOf("POST", 1) > 0 THEN
@@ -1819,9 +2197,9 @@ FUNCTION getNameC(dIn DataInputStream)
   --the following did work too, but unclear why the terminating 0 was ignored
   --LET name = _decoder.decode(buf).toString();
   CALL log(
-      SFMT("getNameC name:%1 len:%2 ,namesize:%3",
-          name, name.getLength(), namesize))
-  RETURN name
+      SFMT("getNameC name:%1 len:%2 ,namesize:%3, bytes:%4",
+          name, name.getLength(), namesize, namesize + 4))
+  RETURN name, namesize + 4
 END FUNCTION
 
 FUNCTION FTName(name STRING) RETURNS STRING
@@ -2418,22 +2796,26 @@ FUNCTION handleFT(vmidx INT, dIn DataInputStream, dataSize INT)
   DEFINE ftType TINYINT
   DEFINE ftg FTGetImage
   DEFINE name STRING
-  DEFINE fileSize, num, fstatus, numBytes INT
+  DEFINE fileSize, num, fstatus, numBytes, remaining INT
   --DEFINE written INT
   DEFINE found BOOLEAN
   DEFINE ba MyByteArray
   LET ftType = dIn.readByte() --buf.get()
   --LET num = ntohl(buf.getInt())
   LET num = ntohl(dIn.readInt())
+  LET remaining = dataSize - 5
   CALL log(
-      SFMT("handleFT ftType:%1,num:%2",
-          IIF((_logChan IS NOT NULL) OR _verbose, getFT2Str(ftType), ""), num))
+      SFMT("handleFT ftType:%1,num:%2, remaining:%3",
+          IIF((_logChan IS NOT NULL) OR _verbose, getFT2Str(ftType), ""),
+          num,
+          remaining))
   CASE ftType
     WHEN FTPutFile
       --LET fileSize = ntohl(buf.getInt())
       LET fileSize = ntohl(dIn.readInt())
-      --LET name = getNameC(buf)
-      LET name = getNameC(dIn)
+      CALL getNameC(dIn) RETURNING name, numBytes
+      LET remaining = remaining - 4 - numBytes
+
       CALL log(
           SFMT("FTPutFile name:%1,num:%2,_s[vmidx].writeNum:%3,_s[vmidx].writeNum2:%4'",
               name, num, _s[vmidx].writeNum, _s[vmidx].writeNum2))
@@ -2450,13 +2832,20 @@ FUNCTION handleFT(vmidx INT, dIn DataInputStream, dataSize INT)
         CALL setWait(vmidx)
       END IF
     WHEN FTGetFile
-      --LET name = getNameC(buf)
-      LET name = getNameC(dIn)
-      CALL log(SFMT("FTGetFile name:'%1',num:%2", name, num))
+      CALL getNameC(dIn) RETURNING name, numBytes
+      LET remaining = remaining - numBytes
+      IF remaining > 0 THEN --read extension list
+        LET ba = MyByteArray.create(remaining)
+        CALL dIn.readFully(ba)
+        LET remaining = 0
+      END IF
+      CALL log(
+          SFMT("FTGetFile name:'%1',num:%2, remaining:%3",
+              name, num, remaining))
       CALL sendFileToVM(vmidx, num, name)
     WHEN FTAck
-      --LET name = getNameC(buf)
-      LET name = getNameC(dIn)
+      CALL getNameC(dIn) RETURNING name, numBytes
+      LET remaining = remaining - numBytes
       CALL log(
           SFMT("FTAck name:'%1',num:%2,vmVersion:%3",
               name, num, _s[vmidx].vmVersion))
@@ -2480,6 +2869,7 @@ FUNCTION handleFT(vmidx INT, dIn DataInputStream, dataSize INT)
       LET numBytes = dataSize - 5
       LET ba = MyByteArray.create(numBytes)
       CALL dIn.readFully(ba)
+      LET remaining = remaining - numBytes
       CALL log(
           SFMT("FTbody for num:%1", num)
           --",pos:%2,limit:%3",
@@ -2522,8 +2912,10 @@ FUNCTION handleFT(vmidx INT, dIn DataInputStream, dataSize INT)
     WHEN FTStatus
       --LET fstatus = ntohl(buf.readInt())
       LET fstatus = ntohl(dIn.readInt())
+      LET remaining = remaining - 4
       CALL log(SFMT("FTStatus for num:%1,status:%2", num, fstatus))
       CASE fstatus
+        WHEN FTOk --ok
         WHEN FStErrSource
           CALL resetWriteNum(vmidx, num)
           CALL ftgFromNum(vmidx, num) RETURNING found, ftg.*
@@ -2536,6 +2928,7 @@ FUNCTION handleFT(vmidx INT, dIn DataInputStream, dataSize INT)
     OTHERWISE
       CALL myErr("unhandled FT case")
   END CASE
+  MYASSERT(remaining == 0)
 END FUNCTION
 
 FUNCTION loadFileFromCache(vmidx INT, num INT)
@@ -2806,7 +3199,7 @@ FUNCTION sendGetImage(vmidx INT, num INT, fileName STRING)
 END FUNCTION
 
 FUNCTION sendAck(vmidx INT, num INT, fileName STRING)
-  DISPLAY ">>>>>>>>>>>sendAck :", vmidx, ",fileName:", fileName
+  --DISPLAY SFMT("sendAck vmidx:%1,num:%2,fileName:%3", vmidx, num, fileName)
   CALL sendGetImageOrAck(vmidx, num, fileName, FALSE)
 END FUNCTION
 
@@ -2899,7 +3292,7 @@ FUNCTION writeToVMEncaps(vmidx INT, cmd STRING)
   DEFINE b ByteBuffer
   CALL setWait(vmidx)
   LET b = _encoder.encode(CharBuffer.wrap(cmd))
-  CALL log(SFMT("sendToVM position:%1,limit:%2", b.position(), b.limit()))
+  CALL log(SFMT("writeToVMEncaps vmidx:%1,cmd:%2", vmidx, limitPrintStr(cmd)))
   --encode() doesn't set position()
   CALL b.position(b.limit()) --because encapsMsgToVM calls flip()
   CALL encapsMsgToVM(vmidx, TAuiData, b)
@@ -2922,4 +3315,26 @@ FUNCTION encapsMsgToVM(vmidx INT, type TINYINT, pkt ByteBuffer)
   CALL buf.flip()
   --CALL writeChannel(_currChan, buf)
   CALL writeChannel(_s[vmidx].chan, buf)
+END FUNCTION
+
+FUNCTION clearCache()
+  DEFINE cacheDir STRING
+  LET cacheDir = "cacheFT"
+  IF NOT os.Path.exists(cacheDir) THEN
+    RETURN
+  END IF
+  CALL rmrf(cacheDir)
+END FUNCTION
+
+FUNCTION rmrf(dirname STRING)
+  DEFINE cmd, curr STRING
+  LET curr = os.Path.fullPath(os.Path.pwd())
+  MYASSERT(os.Path.isDirectory(dirname) AND NOT curr.equals(os.Path.fullPath(dirname)))
+  IF isWin() THEN
+    LET cmd = SFMT("rmdir /s /q %1", quote(dirname))
+  ELSE
+    LET cmd = SFMT("rm -rf %1", quote(dirname))
+  END IF
+  --DISPLAY "rmrf:",cmd
+  RUN cmd
 END FUNCTION
