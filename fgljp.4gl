@@ -1942,7 +1942,7 @@ FUNCTION handleMultiPartUpload(
   DEFINE tok base.StringTokenizer
   DEFINE ctlen, state, didRead, startidx, baoff INT
   DEFINE baRead, toRead, numRead, maxToRead, jslen, wlen INT
-  DEFINE merged, ba, prev ByteArray
+  DEFINE ba, prev ByteArray
   DEFINE fo FileOutputStream
   DEFINE jstring java.lang.String
   CONSTANT MAXB = 30000
@@ -2029,9 +2029,6 @@ FUNCTION handleMultiPartUpload(
     --DISPLAY SFMT("bidx:%1,jstring:'%2',boundary:'%3'", bidx, jstring, boundary)
     IF bidx != -1 THEN
       --DISPLAY "!!!!!!!do write ba to disk"
-      IF merged IS NOT NULL THEN
-        --DISPLAY "  merged in prev"
-      END IF
       IF prev IS NOT NULL THEN
         --DISPLAY "  write also prev"
         CALL fo.write(prev)
@@ -2049,9 +2046,6 @@ FUNCTION handleMultiPartUpload(
             ba, prev, baRead, blen, MAXB)
             RETURNING ba, prev, baRead, startidx
         GOTO testboundary
-      END IF
-      IF ba == merged THEN
-        CALL myErr("ba==merged")
       END IF
       IF baRead == MAXB THEN
         --DISPLAY "  create new buf"
