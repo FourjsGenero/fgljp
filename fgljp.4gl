@@ -1941,7 +1941,7 @@ FUNCTION handleMultiPartUpload(
   DEFINE boundary, line STRING
   DEFINE tok base.StringTokenizer
   DEFINE ctlen, state, didRead, startidx, baoff INT
-  DEFINE baRead, toRead, numRead, maxToRead, jslen INT
+  DEFINE baRead, toRead, numRead, maxToRead, jslen, wlen INT
   DEFINE merged, ba, prev ByteArray
   DEFINE fo FileOutputStream
   DEFINE jstring java.lang.String
@@ -2025,7 +2025,7 @@ FUNCTION handleMultiPartUpload(
     --    startidx, jslen, blen)
     LET jstring =
         java.lang.String.create(ba, startidx, jslen, StandardCharsets.US_ASCII)
-    LET bidx = jstring.lastIndexOf(boundary, startidx)
+    LET bidx = jstring.indexOf(boundary, 0)
     --DISPLAY SFMT("bidx:%1,jstring:'%2',boundary:'%3'", bidx, jstring, boundary)
     IF bidx != -1 THEN
       --DISPLAY "!!!!!!!do write ba to disk"
@@ -2036,7 +2036,8 @@ FUNCTION handleMultiPartUpload(
         --DISPLAY "  write also prev"
         CALL fo.write(prev)
       END IF
-      CALL fo.write(ba, 0, bidx)
+      LET wlen = startidx + bidx
+      CALL fo.write(ba, 0, wlen)
       EXIT WHILE
     ELSE
       --DISPLAY "no boundary found maxToRead:", maxToRead
