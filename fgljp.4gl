@@ -1770,13 +1770,14 @@ END FUNCTION
 
 FUNCTION didReadCompleteVMCmd(buf ByteBuffer)
   DEFINE b1, b2, b3 TINYINT
-  DEFINE pos INT
+  DEFINE pos, p3 INT
   LET pos = buf.position()
   --DISPLAY sfmt("didReadCompleteVM pos:%1,limit:%2,capacity:%3",buf.position(),buf.limit(),buf.capacity())
   IF pos < 3 THEN
     RETURN FALSE
   END IF
-  CALL buf.position(pos - 3)
+  LET p3 = pos - 3 --make pre 4.00 FGL compilers happy
+  CALL buf.position(p3)
   --check for '}}\n', read the last 3 bytes
   --its very unlikely that this is an end of another UTF-8 sequence
   IF (b1 := buf.get()) == 125
@@ -1796,7 +1797,7 @@ END FUNCTION
 FUNCTION readLineFromVM(vmindex INT)
   DEFINE buf, newbuf ByteBuffer
   DEFINE chan SocketChannel
-  DEFINE didRead, newsize, num, len INT
+  DEFINE didRead, newsize, num, len, len1 INT
   DEFINE js java.lang.String
   DEFINE s STRING
   LET chan = _s[vmindex].chan
@@ -1826,8 +1827,9 @@ FUNCTION readLineFromVM(vmindex INT)
   CALL buf.flip()
   LET js = _decoder.decode(buf).toString()
   LET len = js.length()
-  MYASSERT(js.charAt(len - 1) == "\n") --my guess is Java string indexing is a picosecond faster than VM indexing
-  LET s = js.substring(0, len - 1)
+  LET len1 = len - 1
+  MYASSERT(js.charAt(len1) == "\n") --my guess is Java string indexing is a picosecond faster than VM indexing
+  LET s = js.substring(0, len1)
   RETURN s
 END FUNCTION
 
