@@ -23,6 +23,17 @@ MAIN
       RUN SFMT("fglrun demo %1 %2", arg || "+", arg_val(2))
     COMMAND "RUN WITHOUT WAITING"
       RUN SFMT("fglrun demo %1 %2", arg || "+", arg_val(2)) WITHOUT WAITING
+    COMMAND "putfile"
+      CALL fgl_putfile("logo.png","logo2.png")
+      MESSAGE "putfile successful"
+    COMMAND "getfile"
+      TRY
+      CALL fgl_getfile("logo2.png","logo3.png")
+      CATCH
+        DISPLAY err_get(status) TO t
+        CONTINUE MENU
+      END TRY
+      MESSAGE "getfile successful"
     COMMAND "EXIT"
       EXIT MENU
   END MENU

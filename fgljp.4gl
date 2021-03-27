@@ -127,7 +127,8 @@ TYPE TConnectionRec RECORD
   FTs FTList, --list of running file transfers
   --meta STRING,
   clientMetaSent BOOLEAN,
-  putfile STRING,
+  vmputfile STRING,
+  cliputfile STRING,
   isHTTP BOOLEAN, --HTTP related members
   path STRING,
   method STRING,
@@ -679,6 +680,7 @@ FUNCTION parseHttpLine(x INT, s STRING)
   LET _s[x].method = a[1]
   LET path = a[2]
   IF path.getIndexOf("Disposition=attachment", 1) > 0 THEN
+    --DISPLAY "!!!Disposition=attachment for:", s
     LET _s[x].cdattachment = TRUE
   END IF
   LET _s[x].path = path
@@ -1035,23 +1037,22 @@ FUNCTION handleGBCPath(x INT, path STRING)
     --DISPLAY "fname:", fname
     CALL processFile(x, fname, TRUE)
   ELSE
-    IF path.getIndexOf("/gbc/webcomponents/", 1) == 1 THEN
-      LET fname = path.subString(20, path.getLength())
-      LET idx1 = fname.getIndexOf("/", 20)
-      IF idx1 > 0
-          AND (idx2 := fname.getIndexOf("/", idx1)) > 0
-          AND (idx3 := fname.getIndexOf("/__VM__/", idx1)) == idx2 THEN
-        LET fname = fname.subString(idx3 + 1, fname.getLength())
-        LET cut = FALSE --we pass the whole URL
-      END IF
-    ELSE
-      IF path.getIndexOf("/gbc/__VM__/", 1) == 1 THEN
+    CASE
+      WHEN path.getIndexOf("/gbc/webcomponents/", 1) == 1
+        LET fname = path.subString(20, path.getLength())
+        LET idx1 = fname.getIndexOf("/", 20)
+        IF idx1 > 0
+            AND (idx2 := fname.getIndexOf("/", idx1)) > 0
+            AND (idx3 := fname.getIndexOf("/__VM__/", idx1)) == idx2 THEN
+          LET fname = fname.subString(idx3 + 1, fname.getLength())
+          LET cut = FALSE --we pass the whole URL
+        END IF
+      WHEN path.getIndexOf("/gbc/__VM__/", 1) == 1
         LET fname = path.subString(6, path.getLength())
         LET cut = FALSE --we pass the whole URL
-      ELSE
+      OTHERWISE
         LET fname = "gbc://", path.subString(6, path.getLength())
-      END IF
-    END IF
+    END CASE
     LET fname = IIF(cut, cut_question(fname), fname)
     CALL processRemoteFile(x, fname)
   END IF
@@ -1067,11 +1068,10 @@ FUNCTION httpHandler(x INT)
       CALL writeResponse(x, text)
     WHEN path.getIndexOf("/ua/", 1) == 1 --ua proto
       CALL handleUAProto(x, path)
-    WHEN path.getIndexOf("/gbc/", 1) == 1 --gbc asset
-      CALL handleGBCPath(x, path)
-      RETURN
     WHEN _s[x].cdattachment
       CALL handleCDAttachment(x)
+    WHEN path.getIndexOf("/gbc/", 1) == 1 --gbc asset
+      CALL handleGBCPath(x, path)
     OTHERWISE
       IF NOT findFile(x, path) THEN
         CALL http404(x, path)
@@ -1276,8 +1276,8 @@ FUNCTION writeToVMWithProcId(x INT, s STRING, procId STRING)
     RETURN FALSE
   END IF
   LET vmidx = _selDict[procId]
-  IF _s[vmidx].putfile IS NOT NULL THEN
-    --DISPLAY ">>>>hold reply:'", s, "' because of putfile"
+  IF _s[vmidx].cliputfile IS NOT NULL OR _s[vmidx].vmputfile IS NOT NULL THEN
+    --DISPLAY ">>>>hold reply of:'", s, "' because of putfile"
     LET _s[x].state = S_WAITFORVM
     LET _s[x].procId = procId
     RETURN FALSE
@@ -1352,40 +1352,62 @@ FUNCTION writeResponseInt(x INT, content STRING, ct STRING, code STRING)
 END FUNCTION
 
 FUNCTION handleCDAttachment(x INT)
-  DEFINE vmidx, i INT
+  DEFINE vmidx INT
   DEFINE path STRING
   DEFINE hdrs TStringArr
   LET path = _s[x].path
+  IF path.getIndexOf("/gbc/FT/", 1) == 1 THEN
+    LET path = path.subString(5, path.getLength())
+  END IF
   LET vmidx = vmidxFromAppCookie(x, path)
   IF vmidx < 1 THEN
-    CALL http404(x, path)
+    CALL http404(x, _s[x].path)
     RETURN
   END IF
-  IF NOT _s[vmidx].putfile.equals(path) THEN
-    LET _s[vmidx].putfile = path
+  IF NOT _s[vmidx].cliputfile.equals(path) THEN
+    LET _s[vmidx].cliputfile = path
     LET _s[x].cdattachment = FALSE
     LET hdrs = getCacheHeaders(FALSE, "")
     --DISPLAY ">>>>>send 204 No Content:", printSel(x)
     CALL writeResponseInt2(x, "", "", hdrs, "204 No Content")
   ELSE
-    LET _s[vmidx].putfile = NULL
+    LET _s[vmidx].cliputfile = NULL
     --actually deliver the putfile
     IF NOT findFile(x, path) THEN
-      CALL http404(x, path)
+      CALL http404(x, _s[x].path)
     END IF
-
-    FOR i = 1 TO _s.getLength()
-      IF _s[i].state == S_WAITFORVM
-          AND (vmidx := vmidxFromAppCookie(x, path)) > 0 THEN
-        DISPLAY SFMT("!!!!found x:%1 for vmidx:%2 body:%3 ",
-            i, vmidx, _s[i].body, printSel(i))
-        MYASSERT(_s[i].procId IS NOT NULL)
-        MYASSERT(writeToVMWithProcId(x, _s[i].body, _s[i].procId) == TRUE)
-        LET _s[vmidx].httpIdx = i --mark the connection for VM answer
-        EXIT FOR
-      END IF
-    END FOR
+    CALL handleVMResultForPutfile(x, vmidx, path)
   END IF
+END FUNCTION
+
+FUNCTION handleVMResultForPutfile(x INT, vmidx INT, path STRING)
+  DEFINE i, len, num, vmidx2 INT
+  DEFINE body STRING
+  LET len = _s.getLength()
+  FOR i = 1 TO len
+    IF _s[i].state == S_WAITFORVM
+        AND (vmidx2 := vmidxFromAppCookie(i, path)) > 0
+        AND vmidx2 == vmidx THEN
+      LET body = _s[i].body
+      CALL log(
+          SFMT("handleCDAttachment:found x:%1 for vmidx:%2 body:%3 ",
+              i, vmidx, body, printSel(i)))
+      MYASSERT(_s[i].procId IS NOT NULL)
+      IF _opt_program IS NULL THEN -- FT mode
+        MYASSERT(_s[vmidx].vmputfile IS NOT NULL)
+        MYASSERT(body.getIndexOf('{}{{FunctionCallEvent 0{{result "0"}}{}}}', 1) > 0)
+        LET num = getWriteNum(vmidx)
+        CALL resetWriteNum(vmidx, num)
+        LET _s[vmidx].vmputfile = NULL
+        CALL sendFTStatus(vmidx, num, FTOk)
+        CALL lookupNextImage(vmidx)
+      ELSE
+        MYASSERT(writeToVMWithProcId(x, _s[i].body, _s[i].procId) == TRUE)
+      END IF
+      LET _s[vmidx].httpIdx = i --mark the connection for VM answer
+      EXIT FOR
+    END IF
+  END FOR
 END FUNCTION
 
 FUNCTION checkCDAttachment(x INT, hdrs TStringArr)
@@ -1702,7 +1724,6 @@ FUNCTION handleConnectionInt(c INT, key SelectionKey, chan SocketChannel)
   DEFINE go_out, closed BOOLEAN
   DEFINE line STRING
   LET dIn = _s[c].dIn
-  --DISPLAY "before: buf pos:",buf.position(),",caApacity:",buf.capacity(),",limit:",buf.limit()
   CALL configureBlocking(key, chan)
   WHILE NOT go_out
     IF _s[c].isHTTP AND _s[c].state == S_WAITCONTENT THEN
@@ -1769,25 +1790,20 @@ FUNCTION readEncaps(vmidx INT, dIn DataInputStream)
 END FUNCTION
 
 FUNCTION didReadCompleteVMCmd(buf ByteBuffer)
-  DEFINE b1, b2, b3 TINYINT
-  DEFINE pos, p3 INT
+  DEFINE lastByte TINYINT
+  DEFINE pos, lastPos INT
   LET pos = buf.position()
-  --DISPLAY sfmt("didReadCompleteVM pos:%1,limit:%2,capacity:%3",buf.position(),buf.limit(),buf.capacity())
-  IF pos < 3 THEN
+  IF pos < 1 THEN
     RETURN FALSE
   END IF
-  LET p3 = pos - 3 --make pre 4.00 FGL compilers happy
-  CALL buf.position(p3)
-  --check for '}}\n', read the last 3 bytes
-  --its very unlikely that this is an end of another UTF-8 sequence
-  IF (b1 := buf.get()) == 125
-      AND (b2 := buf.get()) == 125
-      AND (b3 := buf.get()) == 10 THEN
-    RETURN TRUE
-  END IF
-  CALL buf.position(pos)
-  --DISPLAY "b1:",ASCII(b1),",b2:",ASCII(b2),",b3:",ASCII(b3)
-  RETURN FALSE
+  LET lastPos = pos - 1 --make pre 4.00 FGL compilers happy
+  CALL buf.position(lastPos)
+  --check for '\n', read the last byte
+  --( its impossible that a UTF-8 follow byte is '\n' )
+  LET lastByte = buf.get()
+  MYASSERT(buf.position() == pos)
+  --CALL buf.position(pos)
+  RETURN lastByte == 10
 END FUNCTION
 
 --unfortunately we can't use neither
@@ -1859,8 +1875,7 @@ FUNCTION handleEmptyLine(c INT)
     RETURN GO_OUT, FALSE
   ELSE
     IF NOT _s[c].isHTTP AND NOT _s[c].isVM THEN
-      CALL log(
-          SFMT("handleConnectionInt: ignore empty line for:%1", printSel(c)))
+      CALL log(SFMT("handleEmptyLine: ignore empty line for:%1", printSel(c)))
       CALL closeSel(c)
       RETURN GO_OUT, CLOSED
     END IF
@@ -2780,6 +2795,16 @@ FUNCTION sendFileToVM(vmidx INT, num INT, name STRING)
   CALL setWait(vmidx)
 END FUNCTION
 
+FUNCTION getWriteNum(vmidx INT)
+  DEFINE num INT
+  LET num = _s[vmidx].writeNum2
+  IF num <> 0 THEN
+    RETURN num
+  END IF
+  MYASSERT(_s[vmidx].writeNum <> 0)
+  RETURN _s[vmidx].writeNum
+END FUNCTION
+
 FUNCTION resetWriteNum(vmidx INT, num INT)
   IF _s[vmidx].writeNum2 == num THEN
     LET _s[vmidx].writeNum2 = 0
@@ -2789,16 +2814,163 @@ FUNCTION resetWriteNum(vmidx INT, num INT)
   END IF
 END FUNCTION
 
+FUNCTION handleFTPutFile(vmidx INT, dIn DataInputStream, num INT, remaining INT)
+  DEFINE fileSize, numBytes INT
+  DEFINE name STRING
+  LET fileSize = ntohl(dIn.readInt())
+  CALL getNameC(dIn) RETURNING name, numBytes
+  LET remaining = remaining - 4 - numBytes
+
+  CALL log(
+      SFMT("handleFTPutFile name:%1,num:%2,_s[vmidx].writeNum:%3,_s[vmidx].writeNum2:%4'",
+          name, num, _s[vmidx].writeNum, _s[vmidx].writeNum2))
+  IF _s[vmidx].writeNum != 0 THEN
+    LET _s[vmidx].writeNum2 = num
+  ELSE
+    LET _s[vmidx].writeNum = num
+  END IF
+  CALL log(
+      SFMT("  _s[vmidx].writeNum:%1,_s[vmidx].writeNum2:%2",
+          _s[vmidx].writeNum, _s[vmidx].writeNum2))
+  IF createOutputStream(vmidx, num, FTName(name), TRUE) THEN
+    LET _s[vmidx].vmputfile = name
+    CALL sendAck(vmidx, num, name)
+    CALL setWait(vmidx)
+  END IF
+  RETURN remaining
+END FUNCTION
+
+FUNCTION handleFTGetFile(vmidx INT, dIn DataInputStream, num INT, remaining INT)
+  DEFINE numBytes INT
+  DEFINE name STRING
+  DEFINE ba MyByteArray
+  CALL getNameC(dIn) RETURNING name, numBytes
+  LET remaining = remaining - numBytes
+  IF remaining > 0 THEN --read extension list
+    LET ba = MyByteArray.create(remaining)
+    CALL dIn.readFully(ba)
+    LET remaining = 0
+  END IF
+  CALL log(
+      SFMT("handleFTGetFile name:'%1',num:%2, remaining:%3",
+          name, num, remaining))
+  CALL sendFileToVM(vmidx, num, name)
+  RETURN remaining
+END FUNCTION
+
+FUNCTION handleFTAck(vmidx INT, dIn DataInputStream, num INT, remaining INT)
+  DEFINE numBytes INT
+  DEFINE name STRING
+  DEFINE found BOOLEAN
+  DEFINE ftg FTGetImage
+  CALL getNameC(dIn) RETURNING name, numBytes
+  LET remaining = remaining - numBytes
+  CALL log(
+      SFMT("handleFTAck name:'%1',num:%2,vmVersion:%3",
+          name, num, _s[vmidx].vmVersion))
+  IF _s[vmidx].vmVersion >= 3.2 AND name == "!!__cached__!!" THEN
+    CALL loadFileFromCache(vmidx, num)
+    CALL resetWriteNum(vmidx, num)
+    CALL lookupNextImage(vmidx)
+  ELSE
+    CALL ftgFromNum(vmidx, num) RETURNING found, ftg.*
+    IF found THEN
+      --DISPLAY "ftg:", util.JSON.stringify(ftg)
+      IF name.getIndexOf("?s=", 1) <> 0 THEN
+        CALL scanCacheParameters(vmidx, name, ftg.*)
+      END IF
+      MYASSERT(createOutputStream(vmidx, 0, cacheFileName(ftg.name), FALSE) == TRUE)
+    ELSE
+      DISPLAY "!!handleFTAck: no ftg for:", num
+    END IF
+  END IF
+  RETURN remaining
+END FUNCTION
+
+FUNCTION handleFTBody(vmidx INT, dIn DataInputStream, num INT, remaining INT)
+  DEFINE ba MyByteArray
+  LET ba = MyByteArray.create(remaining)
+  CALL dIn.readFully(ba)
+  CALL log(
+      SFMT("FTbody for num:%1", num)
+      --",pos:%2,limit:%3",
+      --num, buf.position(), buf.limit())
+      )
+  CALL log(
+      SFMT("  _s[vmidx].writeNum:%1,_s[vmidx].writeNum2:%2",
+          _s[vmidx].writeNum, _s[vmidx].writeNum2))
+  MYASSERT(num == _s[vmidx].writeNum OR num == _s[vmidx].writeNum2)
+  IF num > 0 THEN
+    MYASSERT(_s[vmidx].writeCPut IS NOT NULL)
+    --LET written = _s[vmidx].writeCPut.write(buf)
+    CALL _s[vmidx].writeCPut.write(ba)
+    --DISPLAY "written FTPutfile:", written
+  ELSE
+    MYASSERT(_s[vmidx].writeC IS NOT NULL)
+    --LET written = _s[vmidx].writeC.write(buf)
+    CALL _s[vmidx].writeC.write(ba)
+    --DISPLAY "written:", written
+  END IF
+  RETURN 0
+END FUNCTION
+
+FUNCTION handleFTStatus(vmidx INT, dIn DataInputStream, num INT, remaining INT)
+  DEFINE fstatus INT
+  DEFINE found BOOLEAN
+  DEFINE ftg FTGetImage
+  LET fstatus = ntohl(dIn.readInt())
+  LET remaining = remaining - 4
+  CALL log(SFMT("handleFTStatus for num:%1,status:%2", num, fstatus))
+  CASE fstatus
+    WHEN FTOk --ok
+    WHEN FStErrSource
+      CALL resetWriteNum(vmidx, num)
+      CALL ftgFromNum(vmidx, num) RETURNING found, ftg.*
+      MYASSERT(found == TRUE)
+      CALL handleFTNotFound(vmidx, ftg.*)
+    OTHERWISE
+      CALL myErr("unhandled fstatus")
+  END CASE
+  RETURN remaining
+END FUNCTION
+
+FUNCTION handleFTEof(vmidx INT, num INT)
+  DEFINE found BOOLEAN
+  DEFINE ftg FTGetImage
+  DEFINE dest, ftname STRING
+  CALL log(SFMT("handleFTEof for num:%1", num))
+  MYASSERT(num == _s[vmidx].writeNum OR num == _s[vmidx].writeNum2)
+  IF num > 0 THEN
+    MYASSERT(_s[vmidx].writeCPut IS NOT NULL)
+    CALL _s[vmidx].writeCPut.close()
+    LET _s[vmidx].writeCPut = NULL
+  ELSE
+    MYASSERT(_s[vmidx].writeC IS NOT NULL)
+    CALL _s[vmidx].writeC.close()
+    LET _s[vmidx].writeC = NULL
+  END IF
+  CALL ftgFromNum(vmidx, num) RETURNING found, ftg.*
+  IF found THEN
+    CALL handleDelayedImage(vmidx, ftg.*)
+  END IF
+  MYASSERT(_s[vmidx].vmputfile IS NOT NULL)
+  MYASSERT(_s[vmidx].httpIdx > 0)
+  LET dest = _s[vmidx].vmputfile
+  LET ftname = FTName(dest)
+  LET _s[vmidx].VmCmd =
+      SFMT('om 1 {{an 0 FunctionCall 10000 {{isSystem "0"} {moduleName "standard"} {name "fgl_putfile"} {paramCount "2"} {returnCount "0"}} {{FunctionCallParameter 10001 {{dataType "STRING"} {isNull "0"} {value "%1"}} {}} {FunctionCallParameter 10002 {{dataType "STRING"} {isNull "0"} {value "%2"}} {}}}}}',
+          ftname, dest)
+  CALL handleVM(vmidx, FALSE)
+  --LET line = 'om 1 {{an 0 FunctionCall 10000 {{isSystem "0"} {moduleName "standard"} {name "fgl_putfile"} {paramCount "2"} {returnCount "0"}} {{FunctionCallParameter 10001 {{dataType "STRING"} {isNull "0"} {value "http://localhost:8787/priv/14167/logo.png?t=1615902674;charset=UTF-8"}} {}} {FunctionCallParameter 54 {{dataType "STRING"} {isNull "0"} {value "logo2.png"}} {}}}} {un 39 {{selection "46"}}}}
+  --CALL sendFTStatus(vmidx, num, FTOk)
+  --CALL lookupNextImage(vmidx)
+  --CALL resetWriteNum(vmidx, num)
+END FUNCTION
+
 FUNCTION handleFT(vmidx INT, dIn DataInputStream, dataSize INT)
   DEFINE ftType TINYINT
-  DEFINE ftg FTGetImage
-  DEFINE name STRING
-  DEFINE fileSize, num, fstatus, numBytes, remaining INT
-  --DEFINE written INT
-  DEFINE found BOOLEAN
-  DEFINE ba MyByteArray
-  LET ftType = dIn.readByte() --buf.get()
-  --LET num = ntohl(buf.getInt())
+  DEFINE num, remaining INT
+  LET ftType = dIn.readByte()
   LET num = ntohl(dIn.readInt())
   LET remaining = dataSize - 5
   CALL log(
@@ -2808,120 +2980,17 @@ FUNCTION handleFT(vmidx INT, dIn DataInputStream, dataSize INT)
           remaining))
   CASE ftType
     WHEN FTPutFile
-      --LET fileSize = ntohl(buf.getInt())
-      LET fileSize = ntohl(dIn.readInt())
-      CALL getNameC(dIn) RETURNING name, numBytes
-      LET remaining = remaining - 4 - numBytes
-
-      CALL log(
-          SFMT("FTPutFile name:%1,num:%2,_s[vmidx].writeNum:%3,_s[vmidx].writeNum2:%4'",
-              name, num, _s[vmidx].writeNum, _s[vmidx].writeNum2))
-      IF _s[vmidx].writeNum != 0 THEN
-        LET _s[vmidx].writeNum2 = num
-      ELSE
-        LET _s[vmidx].writeNum = num
-      END IF
-      CALL log(
-          SFMT("  _s[vmidx].writeNum:%1,_s[vmidx].writeNum2:%2",
-              _s[vmidx].writeNum, _s[vmidx].writeNum2))
-      IF createOutputStream(vmidx, num, FTName(name), TRUE) THEN
-        CALL sendAck(vmidx, num, name)
-        CALL setWait(vmidx)
-      END IF
+      LET remaining = handleFTPutFile(vmidx, dIn, num, remaining)
     WHEN FTGetFile
-      CALL getNameC(dIn) RETURNING name, numBytes
-      LET remaining = remaining - numBytes
-      IF remaining > 0 THEN --read extension list
-        LET ba = MyByteArray.create(remaining)
-        CALL dIn.readFully(ba)
-        LET remaining = 0
-      END IF
-      CALL log(
-          SFMT("FTGetFile name:'%1',num:%2, remaining:%3",
-              name, num, remaining))
-      CALL sendFileToVM(vmidx, num, name)
+      LET remaining = handleFTGetFile(vmidx, dIn, num, remaining)
     WHEN FTAck
-      CALL getNameC(dIn) RETURNING name, numBytes
-      LET remaining = remaining - numBytes
-      CALL log(
-          SFMT("FTAck name:'%1',num:%2,vmVersion:%3",
-              name, num, _s[vmidx].vmVersion))
-      IF _s[vmidx].vmVersion >= 3.2 AND name == "!!__cached__!!" THEN
-        CALL loadFileFromCache(vmidx, num)
-        CALL resetWriteNum(vmidx, num)
-        CALL lookupNextImage(vmidx)
-      ELSE
-        CALL ftgFromNum(vmidx, num) RETURNING found, ftg.*
-        IF found THEN
-          --DISPLAY "ftg:", util.JSON.stringify(ftg)
-          IF name.getIndexOf("?s=", 1) <> 0 THEN
-            CALL scanCacheParameters(vmidx, name, ftg.*)
-          END IF
-          MYASSERT(createOutputStream(vmidx, 0, cacheFileName(ftg.name), FALSE) == TRUE)
-        ELSE
-          DISPLAY "!!no ftg for:", num
-        END IF
-      END IF
+      LET remaining = handleFTAck(vmidx, dIn, num, remaining)
     WHEN FTBody
-      LET numBytes = dataSize - 5
-      LET ba = MyByteArray.create(numBytes)
-      CALL dIn.readFully(ba)
-      LET remaining = remaining - numBytes
-      CALL log(
-          SFMT("FTbody for num:%1", num)
-          --",pos:%2,limit:%3",
-          --num, buf.position(), buf.limit())
-          )
-      CALL log(
-          SFMT("  _s[vmidx].writeNum:%1,_s[vmidx].writeNum2:%2",
-              _s[vmidx].writeNum, _s[vmidx].writeNum2))
-      MYASSERT(num == _s[vmidx].writeNum OR num == _s[vmidx].writeNum2)
-      IF num > 0 THEN
-        MYASSERT(_s[vmidx].writeCPut IS NOT NULL)
-        --LET written = _s[vmidx].writeCPut.write(buf)
-        CALL _s[vmidx].writeCPut.write(ba)
-        --DISPLAY "written FTPutfile:", written
-      ELSE
-        MYASSERT(_s[vmidx].writeC IS NOT NULL)
-        --LET written = _s[vmidx].writeC.write(buf)
-        CALL _s[vmidx].writeC.write(ba)
-        --DISPLAY "written:", written
-      END IF
-    WHEN FTEof
-      CALL log(SFMT("FTEof for num:%1", num))
-      MYASSERT(num == _s[vmidx].writeNum OR num == _s[vmidx].writeNum2)
-      IF num > 0 THEN
-        MYASSERT(_s[vmidx].writeCPut IS NOT NULL)
-        CALL _s[vmidx].writeCPut.close()
-        LET _s[vmidx].writeCPut = NULL
-      ELSE
-        MYASSERT(_s[vmidx].writeC IS NOT NULL)
-        CALL _s[vmidx].writeC.close()
-        LET _s[vmidx].writeC = NULL
-      END IF
-      CALL ftgFromNum(vmidx, num) RETURNING found, ftg.*
-      IF found THEN
-        CALL handleDelayedImage(vmidx, ftg.*)
-      END IF
-      CALL resetWriteNum(vmidx, num)
-      CALL sendFTStatus(vmidx, num, FTOk)
-      CALL lookupNextImage(vmidx)
+      LET remaining = handleFTBody(vmidx, dIn, num, remaining)
     WHEN FTStatus
-      --LET fstatus = ntohl(buf.readInt())
-      LET fstatus = ntohl(dIn.readInt())
-      LET remaining = remaining - 4
-      CALL log(SFMT("FTStatus for num:%1,status:%2", num, fstatus))
-      CASE fstatus
-        WHEN FTOk --ok
-        WHEN FStErrSource
-          CALL resetWriteNum(vmidx, num)
-          CALL ftgFromNum(vmidx, num) RETURNING found, ftg.*
-          MYASSERT(found == TRUE)
-          CALL handleFTNotFound(vmidx, ftg.*)
-        OTHERWISE
-          CALL myErr("unhandled fstatus")
-      END CASE
-
+      LET remaining = handleFTStatus(vmidx, dIn, num, remaining)
+    WHEN FTEof
+      CALL handleFTEof(vmidx, num)
     OTHERWISE
       CALL myErr("unhandled FT case")
   END CASE
