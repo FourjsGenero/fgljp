@@ -129,6 +129,8 @@ TYPE TConnectionRec RECORD
   clientMetaSent BOOLEAN,
   vmputfile STRING,
   cliputfile STRING,
+  vmgetfile STRING,
+  vmgetfilenum INT,
   isHTTP BOOLEAN, --HTTP related members
   path STRING,
   method STRING,
@@ -354,7 +356,7 @@ FUNCTION canGoOut()
   LET _checkGoOut = FALSE
   --DISPLAY "_selDict.getLength:",_selDict.getLength(),",keys:",util.JSON.stringify(_selDict.getKeys())
   IF _selDict.getLength() == 0 THEN
-    DISPLAY "no VM channels anymore"
+    CALL log("canGoOut: no VM channels anymore")
     IF _opt_program IS NOT NULL OR _opt_autoclose THEN
       RETURN TRUE
     END IF
@@ -1276,10 +1278,19 @@ FUNCTION writeToVMWithProcId(x INT, s STRING, procId STRING)
     RETURN FALSE
   END IF
   LET vmidx = _selDict[procId]
-  IF _s[vmidx].cliputfile IS NOT NULL OR _s[vmidx].vmputfile IS NOT NULL THEN
-    --DISPLAY ">>>>hold reply of:'", s, "' because of putfile"
+  IF _s[vmidx].cliputfile IS NOT NULL
+      OR _s[vmidx].vmputfile IS NOT NULL
+      OR _s[vmidx].vmgetfile IS NOT NULL THEN
+    --DISPLAY ">>>>hold reply of:'", s, "' because of putfile/getfile"
     LET _s[x].state = S_WAITFORVM
     LET _s[x].procId = procId
+    IF _s[vmidx].vmgetfile IS NOT NULL THEN
+      MYASSERT(os.Path.exists("tmp_getfile.upload"))
+      LET _s[vmidx].VmCmd = NULL
+      LET _s[vmidx].vmgetfile = NULL
+      LET _s[vmidx].httpIdx = x --mark the connection for VM answer
+      CALL sendFileToVM(vmidx, _s[vmidx].vmgetfilenum, "tmp_getfile.upload")
+    END IF
     RETURN FALSE
   END IF
   CALL writeToVM(vmidx, s)
@@ -1966,6 +1977,7 @@ FUNCTION handleMultiPartUpload(
   --DEFINE MAXB INT
   CONSTANT STARTBOUNDARY = 1
   CONSTANT STARTCONTENT = 2
+  CALL log(SFMT("handleMultiPartUpload x:%1, path:%2,ct:%3", x, path, ct))
   LET ctlen = _s[x].contentLen
   LET bidx = ct.getIndexOf("boundary=", 1)
   MYASSERT(bidx > 0)
@@ -2085,7 +2097,9 @@ END FUNCTION
 
 FUNCTION createFO(path STRING)
   DEFINE fo FileOutputStream
-  LET path = ".", path
+  IF path.getIndexOf("/", 1) == 1 THEN
+    LET path = ".", path
+  END IF
   LET fo = FileOutputStream.create(path);
   RETURN fo
 END FUNCTION
@@ -2765,7 +2779,7 @@ FUNCTION sendFileToVM(vmidx INT, num INT, name STRING)
   DEFINE buf ByteBuffer
   DEFINE bytesRead INT
   DEFINE chan FileChannel
-  LET chan = createInputStream(FTName(name))
+  LET chan = createInputStream(name)
   IF chan IS NULL THEN
     CALL sendFTStatus(vmidx, num, FStErrSource)
     RETURN
@@ -2830,7 +2844,7 @@ END FUNCTION
 
 FUNCTION handleFTGetFile(vmidx INT, dIn DataInputStream, num INT, remaining INT)
   DEFINE numBytes INT
-  DEFINE name STRING
+  DEFINE name, sname STRING
   DEFINE ba MyByteArray
   CALL getNameC(dIn) RETURNING name, numBytes
   LET remaining = remaining - numBytes
@@ -2842,7 +2856,18 @@ FUNCTION handleFTGetFile(vmidx INT, dIn DataInputStream, num INT, remaining INT)
   CALL log(
       SFMT("handleFTGetFile name:'%1',num:%2, remaining:%3",
           name, num, remaining))
-  CALL sendFileToVM(vmidx, num, name)
+  LET _s[vmidx].vmgetfile = name
+  LET _s[vmidx].vmgetfilenum = num
+  LET sname = os.Path.baseName(name)
+  --the following is a hack because it uses a fixed node id for
+  --the function call
+  --TODO parse the protocol to know the maximum node id
+  LET _s[vmidx].VmCmd =
+      SFMT('om 1 {{an 0 FunctionCall 10000 {{isSystem "0"} {moduleName "standard"} {name "fgl_getfile"} {paramCount "2"} {returnCount "0"}} {{FunctionCallParameter 10001 {{dataType "STRING"} {isNull "0"} {value "%1"}} {}} {FunctionCallParameter 10002 {{dataType "STRING"} {isNull "0"} {value "../tmp_getfile.upload"}} {}}}}}',
+          sname)
+  --we feed the fake cmd to the GBC
+  --after the GBC did upload the file we need to send the file to the VM
+  CALL handleVM(vmidx, FALSE)
   RETURN remaining
 END FUNCTION
 
@@ -2937,19 +2962,25 @@ FUNCTION handleFTEof(vmidx INT, num INT)
   IF found THEN
     CALL handleDelayedImage(vmidx, ftg.*)
   END IF
-  MYASSERT(_s[vmidx].vmputfile IS NOT NULL)
-  MYASSERT(_s[vmidx].httpIdx > 0)
-  LET dest = _s[vmidx].vmputfile
-  LET ftname = FTName(dest)
-  --the following is a hack because it uses a fixed node id for
-  --the function call
-  --TODO parse the protocol to know the maximum node id
-  LET _s[vmidx].VmCmd =
-      SFMT('om 1 {{an 0 FunctionCall 10000 {{isSystem "0"} {moduleName "standard"} {name "fgl_putfile"} {paramCount "2"} {returnCount "0"}} {{FunctionCallParameter 10001 {{dataType "STRING"} {isNull "0"} {value "%1"}} {}} {FunctionCallParameter 10002 {{dataType "STRING"} {isNull "0"} {value "%2"}} {}}}}}',
-          ftname, dest)
-  --we feed the fake cmd to the GBC
-  --after the GBC did get the file we need to complete the FTEof status
-  CALL handleVM(vmidx, FALSE)
+  IF _s[vmidx].vmputfile IS NOT NULL THEN
+    MYASSERT(_s[vmidx].vmputfile IS NOT NULL)
+    MYASSERT(_s[vmidx].httpIdx > 0)
+    LET dest = _s[vmidx].vmputfile
+    LET ftname = FTName(dest)
+    --the following is a hack because it uses a fixed node id for
+    --the function call
+    --TODO parse the protocol to know the maximum node id
+    LET _s[vmidx].VmCmd =
+        SFMT('om 1 {{an 0 FunctionCall 10000 {{isSystem "0"} {moduleName "standard"} {name "fgl_putfile"} {paramCount "2"} {returnCount "0"}} {{FunctionCallParameter 10001 {{dataType "STRING"} {isNull "0"} {value "%1"}} {}} {FunctionCallParameter 10002 {{dataType "STRING"} {isNull "0"} {value "%2"}} {}}}}}',
+            ftname, dest)
+    --we feed the fake cmd to the GBC
+    --after the GBC did get the file we need to complete the FTEof status
+    CALL handleVM(vmidx, FALSE)
+  ELSE
+    CALL resetWriteNum(vmidx, num)
+    CALL sendFTStatus(vmidx, num, FTOk)
+    CALL lookupNextImage(vmidx)
+  END IF
 END FUNCTION
 
 FUNCTION handleFT(vmidx INT, dIn DataInputStream, dataSize INT)

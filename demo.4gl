@@ -18,7 +18,7 @@ MAIN
     COMMAND "fc"
       CALL fc()
     COMMAND "Show Form"
-      CALL showForm()
+      CALL showForm("logo.png")
     COMMAND "RUN"
       RUN SFMT("fglrun demo %1 %2", arg || "+", arg_val(2))
     COMMAND "RUN WITHOUT WAITING"
@@ -30,20 +30,25 @@ MAIN
       TRY
       CALL fgl_getfile("logo2.png","logo3.png")
       CATCH
+        OPEN FORM f FROM "demo"
+        DISPLAY FORM f
         DISPLAY err_get(status) TO t
         CONTINUE MENU
       END TRY
+      CALL showForm("logo3.png")
       MESSAGE "getfile successful"
+
     COMMAND "EXIT"
       EXIT MENU
   END MENU
 END MAIN
 
-FUNCTION showForm()
+FUNCTION showForm(img STRING)
   OPEN FORM f FROM "demo"
   DISPLAY FORM f
   DISPLAY "Entry" TO entry
-  DISPLAY sfmt('{"value": "WebComponent", "src":"%1"}',ui.Interface.filenameToURI("logo.png")) TO w
+  DISPLAY sfmt('{"value": "WebComponent", "src":"%1"}',ui.Interface.filenameToURI(img)) TO w
+  DISPLAY img TO logo
 END FUNCTION
 
 FUNCTION fc()
