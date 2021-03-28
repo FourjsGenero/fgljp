@@ -2122,13 +2122,6 @@ FUNCTION handleWaitContent(x INT, dIn DataInputStream)
       CALL handleSimplePost(x, dIn, path)
     END IF
   END IF
-  {
-  IF _s[x].body.getIndexOf("GET", 1) > 0
-      OR _s[x].body.getIndexOf("POST", 1) > 0 THEN
-    DISPLAY "wrong body:", _s[x].body
-    MYASSERT(FALSE)
-  END IF
-  }
   LET _s[x].state = S_FINISH
   CALL httpHandler(x)
 END FUNCTION
@@ -2188,7 +2181,6 @@ FUNCTION setWait(vmidx INT)
   LET _s[vmidx].wait = TRUE
 END FUNCTION
 
---FUNCTION getNameC(buf ByteBuffer)
 FUNCTION getNameC(dIn DataInputStream)
   DEFINE name STRING
   DEFINE arr MyByteArray
@@ -2197,7 +2189,6 @@ FUNCTION getNameC(dIn DataInputStream)
   LET namesize = ntohl(dIn.readInt())
   LET arr = MyByteArray.create(namesize)
   TRY
-    --CALL buf.get(arr)
     CALL dIn.readFully(arr)
   CATCH
     CALL myErr(err_get(status))
@@ -2305,7 +2296,6 @@ FUNCTION createOutputStream(
     vmidx INT, num INT, fn STRING, putfile BOOLEAN)
     RETURNS BOOLEAN
   DEFINE f java.io.File
-  --DEFINE fc FileChannel
   DEFINE fc FileOutputStream
   IF putfile THEN
     MYASSERT(_s[vmidx].writeCPut IS NULL)
@@ -2315,7 +2305,6 @@ FUNCTION createOutputStream(
   --CALL log(sfmt("createOutputStream:'%1'",fn))
   LET f = File.create(fn)
   TRY
-    --LET fc = FileOutputStream.create(f, FALSE).getChannel()
     LET fc = FileOutputStream.create(f, FALSE)
     IF putfile THEN
       LET _s[vmidx].writeCPut = fc
@@ -2658,14 +2647,13 @@ FUNCTION getGDCPath()
   IF fglprofile IS NOT NULL THEN
     CALL fgl_setenv("FGLPROFILE", fglprofile)
   END IF
-  DISPLAY "gdc path:", executable
+  CALL log(SFMT("getGDCPath:%1", executable))
   CALL fgl_setenv("FGLSERVER", orig)
   RETURN executable
 END FUNCTION
 
 FUNCTION openBrowser(url)
   DEFINE url, cmd, browser STRING
-  --DISPLAY "start GWC-JS URL:", url
   IF fgl_getenv("SLAVE") IS NOT NULL THEN
     CALL log("gdcm SLAVE set,return")
     RETURN
@@ -2891,11 +2879,7 @@ FUNCTION handleFTBody(vmidx INT, dIn DataInputStream, num INT, remaining INT)
   DEFINE ba MyByteArray
   LET ba = MyByteArray.create(remaining)
   CALL dIn.readFully(ba)
-  CALL log(
-      SFMT("FTbody for num:%1", num)
-      --",pos:%2,limit:%3",
-      --num, buf.position(), buf.limit())
-      )
+  CALL log(SFMT("FTbody for num:%1", num))
   CALL log(
       SFMT("  _s[vmidx].writeNum:%1,_s[vmidx].writeNum2:%2",
           _s[vmidx].writeNum, _s[vmidx].writeNum2))
@@ -2957,14 +2941,15 @@ FUNCTION handleFTEof(vmidx INT, num INT)
   MYASSERT(_s[vmidx].httpIdx > 0)
   LET dest = _s[vmidx].vmputfile
   LET ftname = FTName(dest)
+  --the following is a hack because it uses a fixed node id for
+  --the function call
+  --TODO parse the protocol to know the maximum node id
   LET _s[vmidx].VmCmd =
       SFMT('om 1 {{an 0 FunctionCall 10000 {{isSystem "0"} {moduleName "standard"} {name "fgl_putfile"} {paramCount "2"} {returnCount "0"}} {{FunctionCallParameter 10001 {{dataType "STRING"} {isNull "0"} {value "%1"}} {}} {FunctionCallParameter 10002 {{dataType "STRING"} {isNull "0"} {value "%2"}} {}}}}}',
           ftname, dest)
+  --we feed the fake cmd to the GBC
+  --after the GBC did get the file we need to complete the FTEof status
   CALL handleVM(vmidx, FALSE)
-  --LET line = 'om 1 {{an 0 FunctionCall 10000 {{isSystem "0"} {moduleName "standard"} {name "fgl_putfile"} {paramCount "2"} {returnCount "0"}} {{FunctionCallParameter 10001 {{dataType "STRING"} {isNull "0"} {value "http://localhost:8787/priv/14167/logo.png?t=1615902674;charset=UTF-8"}} {}} {FunctionCallParameter 54 {{dataType "STRING"} {isNull "0"} {value "logo2.png"}} {}}}} {un 39 {{selection "46"}}}}
-  --CALL sendFTStatus(vmidx, num, FTOk)
-  --CALL lookupNextImage(vmidx)
-  --CALL resetWriteNum(vmidx, num)
 END FUNCTION
 
 FUNCTION handleFT(vmidx INT, dIn DataInputStream, dataSize INT)
@@ -2992,7 +2977,7 @@ FUNCTION handleFT(vmidx INT, dIn DataInputStream, dataSize INT)
     WHEN FTEof
       CALL handleFTEof(vmidx, num)
     OTHERWISE
-      CALL myErr("unhandled FT case")
+      CALL myErr("handleFT:unhandled case")
   END CASE
   MYASSERT(remaining == 0)
 END FUNCTION
@@ -3004,7 +2989,6 @@ FUNCTION loadFileFromCache(vmidx INT, num INT)
   IF NOT found THEN
     RETURN
   END IF
-  --VAR cachedFile=cacheFileName(ftg.name)
   LET ftg.cache = FALSE
   CALL handleDelayedImage(vmidx, ftg.*)
 END FUNCTION
@@ -3069,7 +3053,7 @@ FUNCTION handleDelayedImageInt(vmidx INT, ftg FTGetImage, cachedFile STRING)
   DEFINE t INT
   CALL log(SFMT("handleDelayedImage:", vmidx, util.JSON.stringify(ftg)))
   CALL removeImg(vmidx, ftg.*)
-  IF NOT ftg.cache OR {data==nil OR} ftg.mtime == 0 THEN
+  IF NOT ftg.cache OR ftg.mtime == 0 THEN
     {
     DISPLAY "  return NOT ftg.cache OR ftg.mtime, cachedFile:",
         cachedFile,
