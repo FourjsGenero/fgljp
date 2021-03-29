@@ -1790,7 +1790,7 @@ FUNCTION readEncaps(vmidx INT, dIn DataInputStream)
   LET type = dIn.readByte()
   CASE
     WHEN type = TAuiData
-      LET line = dIn.readLine()
+      LET line = readLineFromVM(vmidx)
       CALL lookupNextImage(vmidx)
     WHEN type = TFileTransfer
       CALL handleFT(vmidx, dIn, dataSize)
@@ -1820,14 +1820,14 @@ END FUNCTION
 --unfortunately we can't use neither
 --DataInputStream.readLine nor
 --BufferedReader.readLine because both stop already at '\r'
---this forces us to read byte chunks until we discover '}}\n'
-FUNCTION readLineFromVM(vmindex INT)
+--this forces us to read byte chunks until we discover '\n'
+FUNCTION readLineFromVM(vmidx INT)
   DEFINE buf, newbuf ByteBuffer
   DEFINE chan SocketChannel
   DEFINE didRead, newsize, num, len, len1 INT
   DEFINE js java.lang.String
   DEFINE s STRING
-  LET chan = _s[vmindex].chan
+  LET chan = _s[vmidx].chan
   LET buf = ByteBuffer.allocate(30000)
   LET didRead = chan.read(buf)
   IF didRead == -1 THEN
