@@ -1874,7 +1874,11 @@ FUNCTION ReadLine(c INT, dIn DataInputStream)
       LET line = readLineFromVM(c)
     END IF
   ELSE
-    LET line = dIn.readLine()
+    TRY
+      LET line = dIn.readLine()
+    CATCH
+      CALL log(SFMT("ReadLine:%1", err_get(status)))
+    END TRY
   END IF
   RETURN line, FALSE
 END FUNCTION
