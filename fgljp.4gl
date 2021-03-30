@@ -1771,8 +1771,10 @@ FUNCTION readEncaps(vmidx INT, dIn DataInputStream)
     LET err = err_get(status)
     --DISPLAY "err:'",err,"'"
     IF err.equals("Java exception thrown: java.io.EOFException.\n")
-        OR err.equals(
-            "Java exception thrown: java.io.IOException: Connection reset by peer.\n") THEN
+        OR err.getIndexOf(
+                "Java exception thrown: java.io.IOException: Connection reset",
+                1)
+            > 0 THEN
       --DISPLAY "!!!readEncaps EOF!!!"
       RETURN TAuiData, ""
     END IF
@@ -1790,7 +1792,7 @@ FUNCTION readEncaps(vmidx INT, dIn DataInputStream)
   LET type = dIn.readByte()
   CASE
     WHEN type = TAuiData
-      LET line = readLineFromVM(vmidx)
+      LET line = readLineFromVM(vmidx, dataSize)
       CALL lookupNextImage(vmidx)
     WHEN type = TFileTransfer
       CALL handleFT(vmidx, dIn, dataSize)
@@ -1821,14 +1823,15 @@ END FUNCTION
 --DataInputStream.readLine nor
 --BufferedReader.readLine because both stop already at '\r'
 --this forces us to read byte chunks until we discover '\n'
-FUNCTION readLineFromVM(vmidx INT)
+FUNCTION readLineFromVM(vmidx INT, dataSize INT)
   DEFINE buf, newbuf ByteBuffer
   DEFINE chan SocketChannel
-  DEFINE didRead, newsize, num, len, len1 INT
+  DEFINE bufsize, didRead, newsize, num, len, len1 INT
   DEFINE js java.lang.String
   DEFINE s STRING
   LET chan = _s[vmidx].chan
-  LET buf = ByteBuffer.allocate(30000)
+  LET bufsize = IIF(dataSize > 0, dataSize, 30000)
+  LET buf = ByteBuffer.allocate(bufsize)
   LET didRead = chan.read(buf)
   IF didRead == -1 THEN
     RETURN ""
@@ -1836,6 +1839,7 @@ FUNCTION readLineFromVM(vmidx INT)
   --DISPLAY sfmt("didRead:%1,num:%2,pos:%3,limit:%4",didRead,num,buf.position(),buf.limit())
   WHILE NOT didReadCompleteVMCmd(buf)
     IF buf.position() == buf.limit() THEN --need to realloc
+      MYASSERT(dataSize == 0)
       LET newsize = buf.capacity() * 2
       LET newbuf = ByteBuffer.allocate(newsize)
       CALL buf.flip()
@@ -1871,7 +1875,7 @@ FUNCTION ReadLine(c INT, dIn DataInputStream)
         RETURN "", GO_OUT
       END IF
     ELSE
-      LET line = readLineFromVM(c)
+      LET line = readLineFromVM(c, 0)
     END IF
   ELSE
     TRY
