@@ -2244,6 +2244,10 @@ FUNCTION replace(src STRING, oldStr STRING, newString STRING)
   RETURN b.toString()
 END FUNCTION
 
+FUNCTION backslash2slash(src STRING)
+  RETURN replace(src, "\\", "/")
+END FUNCTION
+
 FUNCTION clientSideName(name STRING, subDir STRING) RETURNS STRING
   DEFINE b base.StringBuffer
   LET b = base.StringBuffer.create()
@@ -2286,7 +2290,7 @@ FUNCTION getURLQueryDict(surl STRING) RETURNS(TStringDict, URI)
   DEFINE tok base.StringTokenizer
   DEFINE d TStringDict
   LET surl = replace(surl, " ", "+")
-  LET surl = replace(surl, "\\", "/")
+  LET surl = backslash2slash(surl)
   IF surl.getIndexOf(":", 1) == 2 THEN --drive letter
     LET surl = "http:", surl.subString(3, surl.getLength())
   END IF
@@ -2975,6 +2979,8 @@ FUNCTION handleFTEof(vmidx INT, num INT)
     MYASSERT(_s[vmidx].httpIdx > 0)
     LET dest = _s[vmidx].vmputfile
     LET ftname = FTName(dest)
+    LET ftname = backslash2slash(ftname)
+    LET dest = backslash2slash(dest)
     --the following is a hack because it uses a fixed node id for
     --the function call
     --TODO parse the protocol to know the maximum node id
