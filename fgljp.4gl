@@ -111,7 +111,7 @@ TYPE TConnectionRec RECORD
   RUNchildren TStringArr, --program RUN children procId's
   httpIdx INT, --http connection waiting
   VmCmd STRING, --last VM cmd
-  wait BOOLEAN, --token for socket communication
+  --wait BOOLEAN, --token for socket communication
   FTV2 BOOLEAN, --VM has filetransfer V2
   ftNum INT, --current FT num
   writeNum INT, --FT id1
@@ -828,12 +828,13 @@ FUNCTION checkNewTask(vmidx INT)
   MYASSERT(procIdParent IS NOT NULL)
   LET pidx = _selDict[procIdParent]
   --DISPLAY "checkNewTask:", procIdParent, " for meta:", _s[vmidx].VmCmd
-  CALL checkNewTasks(vmidx)
   IF _s[pidx].httpIdx == 0 THEN
     CALL log("checkNewTask(): parent httpIdx is NULL")
-    RETURN
+    RETURN FALSE
   END IF
+  CALL checkNewTasks(vmidx)
   CALL handleVM(pidx, FALSE)
+  RETURN TRUE
 END FUNCTION
 
 FUNCTION handleUAProto(x INT, path STRING)
@@ -1589,7 +1590,9 @@ END FUNCTION
 FUNCTION decideStartOrNewTask(vmidx INT)
   --either start client or send newTask
   IF _s[vmidx].procIdParent IS NOT NULL THEN
-    CALL checkNewTask(vmidx)
+    IF NOT checkNewTask(vmidx) THEN
+      CALL handleStart(vmidx)
+    END IF
   ELSE
     CALL handleStart(vmidx)
   END IF
@@ -1764,7 +1767,7 @@ FUNCTION readEncaps(vmidx INT, dIn DataInputStream)
   DEFINE s1, s2, bodySize, dataSize INT
   DEFINE type TINYINT
   DEFINE line, err STRING
-  LET _s[vmidx].wait = FALSE
+  --LET _s[vmidx].wait = FALSE
   TRY
     LET s1 = dIn.readInt()
   CATCH
@@ -1783,11 +1786,7 @@ FUNCTION readEncaps(vmidx INT, dIn DataInputStream)
   LET bodySize = ntohl(s1)
   LET s2 = dIn.readInt()
   LET dataSize = ntohl(s2)
-  --DISPLAY SFMT("s1:%1,s2:%2,bodySize:%3,dataSize:%4",
-  --    s1, s2, bodySize, dataSize)
-  IF (bodySize <> dataSize) THEN
-    DISPLAY "!!!!!!readEncaps bodySize:", bodySize, "<> dataSize:", dataSize
-  END IF
+  CALL log(SFMT("readEncaps bodySize:%1,dataSize:%2", bodySize, dataSize))
   MYASSERT(bodySize == dataSize)
   LET type = dIn.readByte()
   CASE
@@ -1940,7 +1939,7 @@ FUNCTION handleLine(c INT, line STRING)
     WHEN _s[c].isVM
       IF _s[c].state == S_WAITFORFT THEN
         MYASSERT(line == "filetransfer")
-        --DISPLAY "<<<<<filetransfer received"
+        CALL log("handleLine: filetransfer\n received")
         LET _s[c].state = S_ACTIVE
         CALL lookupNextImage(c)
         RETURN GO_OUT
@@ -2198,9 +2197,10 @@ FUNCTION checkReRegister(c INT)
 END FUNCTION
 
 FUNCTION setWait(vmidx INT)
-  MYASSERT(_s[vmidx].wait == FALSE)
+  UNUSED_VAR(vmidx)
+  --MYASSERT(_s[vmidx].wait == FALSE)
   --DISPLAY ">>setWait"
-  LET _s[vmidx].wait = TRUE
+  --LET _s[vmidx].wait = TRUE
 END FUNCTION
 
 FUNCTION getNameC(dIn DataInputStream)
@@ -3151,6 +3151,9 @@ FUNCTION checkRequestFT(x INT, vmidx INT, fname STRING)
     DISPLAY "No FT value for:", vmidx
     RETURN
   END IF
+  IF _s[vmidx].state == S_FINISH THEN
+    RETURN
+  END IF
   CALL checkFT2(fname) RETURNING cached, realName, ft2
   IF cached THEN --we have the file already in the cache
     LET cachedName = cacheFileName(realName)
@@ -3176,7 +3179,6 @@ FUNCTION checkRequestFT(x INT, vmidx INT, fname STRING)
           fname, _s[vmidx].ftNum, printSel(vmidx)))
   LET FTs = getFTs(vmidx)
   LET FTs[FTs.getLength() + 1].* = ftg.*
-  MYASSERT(NOT _s[vmidx].state.equals(S_FINISH))
   IF NOT _s[vmidx].state = S_ACTIVE THEN
     RETURN
   END IF
@@ -3244,24 +3246,25 @@ FUNCTION lookupNextImage(vmidx INT)
   LET len = FTs.getLength()
   CALL log(
       SFMT("lookupNextImage wait:%1,writeNum:%2,len:%3,writeC IS NOT NULL:%4",
-          _s[vmidx].wait,
+          0, --_s[vmidx].wait,
           _s[vmidx].writeNum,
           len,
           _s[vmidx].writeC IS NOT NULL))
-  IF _s[vmidx].wait
-      OR (_s[vmidx].writeNum != 0)
-      OR (len == 0)
-      OR (_s[vmidx].writeC IS NOT NULL) THEN
+  IF --_s[vmidx].wait OR
+      (_s[vmidx].writeNum != 0)
+          OR (len == 0)
+          OR (_s[vmidx].writeC IS NOT NULL) THEN
     IF _s[vmidx].writeNum == 0 AND len == 0 AND _s[vmidx].writeC IS NULL THEN
       CALL log("lookupNextImage: all files transferred!")
-      --ELSE
-      --DISPLAY "  _s[vmidx].writeNum != 0"
+    ELSE
+      CALL log("  _s[vmidx].writeNum != 0")
     END IF
     RETURN
   END IF
   MYASSERT(FTs.getLength() > 0)
   LET ftg.* = FTs[1].*
-  --DISPLAY "  lookupNextImage:", util.JSON.stringify(ftg)
+  CALL log(
+      SFMT("  lookupNextImage:%1", IIF(_verbose, util.JSON.stringify(ftg), "")))
   LET _s[vmidx].writeNum = ftg.num
   IF _s[vmidx].vmVersion >= 3.2 THEN
     CALL checkCacheSendInformation(vmidx, ftg.*)
@@ -3288,7 +3291,7 @@ FUNCTION sendGetImage(vmidx INT, num INT, fileName STRING)
 END FUNCTION
 
 FUNCTION sendAck(vmidx INT, num INT, fileName STRING)
-  --DISPLAY SFMT("sendAck vmidx:%1,num:%2,fileName:%3", vmidx, num, fileName)
+  DISPLAY SFMT("sendAck vmidx:%1,num:%2,fileName:%3", vmidx, num, fileName)
   CALL sendGetImageOrAck(vmidx, num, fileName, FALSE)
 END FUNCTION
 
@@ -3370,7 +3373,7 @@ END FUNCTION
 
 FUNCTION sendCommandToVM(vmidx INT, msg STRING)
   --DEFINE cmd STRING
-  MYASSERT(_s[vmidx].wait == FALSE)
+  --MYASSERT(_s[vmidx].wait == FALSE)
   --LET _cmdCount = _cmdCount + 1
   --LET cmd = SFMT("event _om %1{}{%2}\n", _cmdCount, msg);
   CALL log(SFMT("sendCommandToVM:%1", msg))
