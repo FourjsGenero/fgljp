@@ -109,6 +109,7 @@ TYPE TConnectionRec RECORD
   isVM BOOLEAN, --VM related members
   vmVersion FLOAT, --vm reported version
   RUNchildren TStringArr, --program RUN children procId's
+  RUNchildIdx INT, --current RUN child index
   httpIdx INT, --http connection waiting
   VmCmd STRING, --last VM cmd
   --wait BOOLEAN, --token for socket communication
@@ -776,12 +777,12 @@ END FUNCTION
 
 FUNCTION checkNewTasks(vmidx INT)
   DEFINE sessId STRING
-  DEFINE i, len INT
+  DEFINE i, len, cnt INT
   IF _newtasks <= 0
       OR (sessId := _s[vmidx].sessId) IS NULL
       OR NOT _RWWchildren.contains(sessId)
       OR _RWWchildren[sessId].getLength() == 0 THEN
-    RETURN
+    RETURN 0
   END IF
   --DISPLAY "checkNewTasks:", printSel(vmidx), ",_newtasks:", _newtasks, ",sess:", util.JSON.stringify(_RWWchildren), ",sessId:",_s[vmidx].sessId
   --FOR i = 1 TO _s.getLength()
@@ -795,9 +796,12 @@ FUNCTION checkNewTasks(vmidx INT)
           sessId, util.JSON.stringify(_RWWchildren[sessId])))
   FOR i = 1 TO len
     IF _s[i].newtask AND _s[i].procId == sessId THEN
+      LET cnt = cnt + 1
+      CALL log(SFMT("checkNewTasks->checkHTTPForSend:%1", i))
       CALL checkHTTPForSend(i, sessId, FALSE, "")
     END IF
   END FOR
+  RETURN cnt
 END FUNCTION
 
 FUNCTION handleVM(vmidx INT, vmclose BOOLEAN)
@@ -805,7 +809,7 @@ FUNCTION handleVM(vmidx INT, vmclose BOOLEAN)
   DEFINE line STRING
   DEFINE httpIdx INT
   IF NOT vmclose THEN
-    CALL checkNewTasks(vmidx)
+    CALL checkNewTasks(vmidx) RETURNING status
   END IF
   LET procId = _s[vmidx].procId
   LET line = _s[vmidx].VmCmd
@@ -822,17 +826,17 @@ FUNCTION handleVM(vmidx INT, vmclose BOOLEAN)
 END FUNCTION
 
 FUNCTION checkNewTask(vmidx INT)
-  DEFINE pidx INT
+  DEFINE pidx, cnt INT
   DEFINE procIdParent STRING
   LET procIdParent = _s[vmidx].procIdParent
   MYASSERT(procIdParent IS NOT NULL)
   LET pidx = _selDict[procIdParent]
   --DISPLAY "checkNewTask:", procIdParent, " for meta:", _s[vmidx].VmCmd
+  LET cnt = checkNewTasks(vmidx)
   IF _s[pidx].httpIdx == 0 THEN
-    CALL log("checkNewTask(): parent httpIdx is NULL")
-    RETURN FALSE
+    CALL log(SFMT("checkNewTask(): parent httpIdx is NULL,cnt:%1", cnt))
+    RETURN IIF(cnt > 0, TRUE, FALSE)
   END IF
-  CALL checkNewTasks(vmidx)
   CALL handleVM(pidx, FALSE)
   RETURN TRUE
 END FUNCTION
@@ -1137,9 +1141,22 @@ FUNCTION readTextFile(fname)
   RETURN res
 END FUNCTION
 
+FUNCTION getRUNChildIdx(vmidx INT)
+  DEFINE cidx INT
+  LET cidx = _s[vmidx].RUNchildIdx
+  IF cidx IS NULL OR cidx <= 0 OR cidx > _s.getLength() THEN
+    RETURN vmidx
+  END IF
+  IF _s[cidx].procIdWaiting == _s[vmidx].procId THEN
+    RETURN getRUNChildIdx(cidx)
+  ELSE
+    RETURN vmidx
+  END IF
+END FUNCTION
+
 FUNCTION vmidxFromAppCookie(x INT, fname STRING)
   DEFINE procId STRING
-  DEFINE vmidx INT
+  DEFINE vmidx, cidx INT
   LET procId = _s[x].appCookie
   IF procId IS NULL THEN
     CALL log(
@@ -1157,7 +1174,12 @@ FUNCTION vmidxFromAppCookie(x INT, fname STRING)
   CALL log(
       SFMT("vmidxFromAppCookie %1,procId:%2,vmidx:%3",
           printSel(x), procId, vmidx))
-  RETURN vmidx
+  --need to lookup the current RUN child
+  LET cidx = getRUNChildIdx(vmidx)
+  IF cidx <> vmidx THEN
+    CALL log(SFMT("  RUNchild %1", printSel(cidx)))
+  END IF
+  RETURN cidx
 END FUNCTION
 
 FUNCTION processRemoteFile(x INT, fname STRING)
@@ -1326,7 +1348,7 @@ END FUNCTION
 FUNCTION writeToVMNoEncaps(vmidx INT, s STRING)
   DEFINE jstring java.lang.String
   LET jstring = s
-  CALL writeChannel(_s[vmidx].chan, _encoder.encode(CharBuffer.wrap(jstring)))
+  CALL writeChannel(vmidx, _encoder.encode(CharBuffer.wrap(jstring)))
 END FUNCTION
 
 FUNCTION writeHTTPFile(x INT, fn STRING)
@@ -1537,7 +1559,7 @@ END FUNCTION
 FUNCTION handleMetaSel(vmidx INT, line STRING)
   DEFINE pp, procIdWaiting, sessId, encaps, compression, rtver STRING
   DEFINE ftV STRING
-  DEFINE ppidx INT
+  DEFINE ppidx, waitIdx INT
   DEFINE children TStringArr
   LET _s[vmidx].isVM = TRUE
   LET _s[vmidx].VmCmd = line
@@ -1559,6 +1581,10 @@ FUNCTION handleMetaSel(vmidx INT, line STRING)
   IF procIdWaiting IS NOT NULL THEN
     LET procIdWaiting = extractProcId(procIdWaiting)
     LET _s[vmidx].procIdWaiting = procIdWaiting
+    IF _selDict.contains(procIdWaiting) THEN
+      LET waitIdx = _selDict[procIdWaiting];
+      LET _s[waitIdx].RUNchildIdx = vmidx;
+    END IF
   END IF
   LET pp = extractMetaVar(line, "procIdParent", FALSE)
   IF pp IS NOT NULL THEN
@@ -1939,7 +1965,7 @@ FUNCTION handleLine(c INT, line STRING)
     WHEN _s[c].isVM
       IF _s[c].state == S_WAITFORFT THEN
         MYASSERT(line == "filetransfer")
-        CALL log("handleLine: filetransfer\n received")
+        CALL log("handleLine: filetransfer\\n received")
         LET _s[c].state = S_ACTIVE
         CALL lookupNextImage(c)
         RETURN GO_OUT
@@ -2410,10 +2436,14 @@ FUNCTION lookupInCache(name STRING) RETURNS(BOOLEAN, INT, INT)
   RETURN TRUE, s, t
 END FUNCTION
 
-FUNCTION writeChannel(chan SocketChannel, buf ByteBuffer)
+FUNCTION writeChannel(vmidx INT, buf ByteBuffer)
+  DEFINE limit INT
+  LET limit = buf.limit()
   WHILE buf.hasRemaining() --need to loop because
-    CALL chan.write(buf) --chan is non blocking
+    CALL _s[vmidx].chan.write(buf) --chan is non blocking
   END WHILE
+  CALL log(
+      SFMT("writeChannel did write:%1 bytes of %2", limit, printSel(vmidx)))
 END FUNCTION
 
 FUNCTION getByte(x, pos) --pos may be 0..3
@@ -3412,7 +3442,7 @@ FUNCTION encapsMsgToVM(vmidx INT, type TINYINT, pkt ByteBuffer)
   --DISPLAY "pkt len:", len, ",buf pos:", buf.position()
   CALL buf.flip()
   --CALL writeChannel(_currChan, buf)
-  CALL writeChannel(_s[vmidx].chan, buf)
+  CALL writeChannel(vmidx, buf)
 END FUNCTION
 
 FUNCTION clearCache()
