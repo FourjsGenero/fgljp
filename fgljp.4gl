@@ -607,7 +607,6 @@ FUNCTION acceptNew()
   DEFINE dIn DataInputStream
   --DEFINE br BufferedReader
   DEFINE c INT
-  DEFINE empty TConnectionRec
   DEFINE ji java.lang.Integer
   LET chan = _server.accept()
   IF chan IS NULL THEN
@@ -624,7 +623,7 @@ FUNCTION acceptNew()
   --CALL clientkey.interestOps(0)
   --LET buf = ByteBuffer.allocate(2048) --allocate initial buffer for meta
   LET c = findFreeSelIdx()
-  LET _s[c].* = empty.*
+  CALL setEmptyConnection(c)
   LET _s[c].state = S_INIT
   LET _s[c].chan = chan
   --LET _selId = _selId + 1
@@ -823,6 +822,7 @@ FUNCTION handleVM(vmidx INT, vmclose BOOLEAN)
   LET _s[vmidx].httpIdx = 0
   LET _s[vmidx].VmCmd = NULL
   LET _s[vmidx].didSendVMClose = vmclose
+  CALL log(SFMT("handleVM vmclose:%1,%2", vmclose, printSel(vmidx)))
 END FUNCTION
 
 FUNCTION checkNewTask(vmidx INT)
@@ -1016,6 +1016,9 @@ FUNCTION sendToClient(x INT, vmCmd STRING, procId STRING, vmclose BOOLEAN)
   END IF
   IF vmclose THEN --must be the last check in _selDict
     LET hdrs[hdrs.getLength() + 1] = "X-FourJs-Closed: true"
+    MYASSERT(_selDict.contains(procId))
+    LET vmidx = _selDict[procId]
+    CALL setEmptyConnection(vmidx)
     CALL _selDict.remove(procId)
     --DISPLAY "  _selDict after remove:", util.JSON.stringify(_selDict.getKeys())
     LET _checkGoOut = TRUE
@@ -1655,11 +1658,15 @@ FUNCTION handleMeta(key SelectionKey, buf ByteBuffer, pos INT)
   --CALL writeChannel(_currChan, _encoder.encode(CharBuffer.wrap(meta)))
 END FUNCTION
 
+FUNCTION setEmptyConnection(c INT)
+  DEFINE empty TConnectionRec
+  LET _s[c].* = empty.* --resets also active
+END FUNCTION
+
 FUNCTION handleConnection(key SelectionKey)
   DEFINE chan SocketChannel
   DEFINE readable BOOLEAN
   DEFINE ji java.lang.Integer
-  DEFINE empty TConnectionRec
   DEFINE c INT
   TRY
     LET readable = key.isReadable()
@@ -1679,7 +1686,7 @@ FUNCTION handleConnection(key SelectionKey)
   CALL handleConnectionInt(c, key, chan)
   IF _s[c].isVM THEN
     IF _s[c].didSendVMClose THEN
-      LET _s[c].* = empty.* --resets also active
+      CALL setEmptyConnection(c)
     ELSE
       LET _selDict[_s[c].procId] = c --store the selector index of the procId
       {
