@@ -1,4 +1,4 @@
-#+ fgljp fgl GAS proxy using java interfaces
+#+ fgljp fgl GAS/remote proxy using java interfaces
 OPTIONS
 SHORT CIRCUIT
 &define MYASSERT(x) IF NOT NVL(x,0) THEN CALL myErr("ASSERTION failed in line:"||__LINE__||":"||#x) END IF
@@ -54,7 +54,8 @@ IMPORT JAVA java.lang.Integer
 --IMPORT JAVA java.lang.Byte
 --IMPORT JAVA java.lang.Boolean
 --IMPORT JAVA java.util.Arrays
-CONSTANT _keepalive = TRUE
+CONSTANT _keepalive =
+    TRUE --if set to TRUE http socket connections are kept alive
 
 PUBLIC TYPE TStartEntries RECORD
   port INT,
@@ -146,12 +147,10 @@ TYPE TConnectionRec RECORD
 END RECORD
 
 --Parser token types
-{
 CONSTANT TOK_None = 0
 CONSTANT TOK_Number = 1
 CONSTANT TOK_Value = 2
 CONSTANT TOK_Ident = 3
-}
 
 --encapsulation command types
 CONSTANT TAuiData = 1
@@ -221,6 +220,20 @@ DEFINE _didAcceptOnce BOOLEAN
 DEFINE _selector Selector
 DEFINE _fglserver STRING
 
+--Parser state record
+TYPE TclP RECORD
+  pos INT,
+  buf STRING,
+  number INT,
+  value STRING,
+  ident STRING,
+  active BOOLEAN
+END RECORD
+
+DEFINE _p TclP
+--DEFINE _aui DYNAMIC ARRAY OF om.DomNode --node storage
+--DEFINE _doc om.DomDocument
+
 MAIN
   DEFINE socket ServerSocket
   DEFINE port INT
@@ -249,8 +262,8 @@ MAIN
   ELSE
     LET port = IIF(_opt_port IS NOT NULL, parseInt(_opt_port), 6400)
   END IF
-  ---CALL log(SFMT("use port:%1 for bind()", port))
   LABEL bind_again:
+  CALL log(SFMT("use port:%1 for bind()", port))
   TRY
     IF _opt_any THEN --we are reachable from outside and get firewall warnings
       LET saddr = InetSocketAddress.create(port)
@@ -261,7 +274,7 @@ MAIN
     CALL socket.bind(saddr)
   CATCH
     CALL log(SFMT("socket.bind:%1", err_get(status)))
-    IF _opt_program IS NOT NULL AND _opt_port IS NULL THEN
+    IF _opt_port IS NULL THEN
       LET port = port + 1
       IF port < 9000 THEN
         GOTO bind_again
@@ -298,6 +311,7 @@ MAIN
     CALL _selector.select();
     CALL processKeys("processKeys selectedKeys():", _selector.selectedKeys())
   END WHILE
+  CALL log("fgljp FINISH")
 END MAIN
 
 FUNCTION processKeys(what STRING, inkeys Set)
@@ -565,7 +579,7 @@ PRIVATE FUNCTION parseArgs()
   END IF
 END FUNCTION
 
-PRIVATE FUNCTION myErr(errstr STRING)
+FUNCTION myErr(errstr STRING)
   DEFINE ch base.Channel
   LET ch = base.Channel.create()
   CALL ch.openFile("<stderr>", "w")
@@ -1977,6 +1991,7 @@ FUNCTION handleLine(c INT, line STRING)
         CALL lookupNextImage(c)
         RETURN GO_OUT
       END IF
+      --CALL parseTcl(c, line)
       LET _s[c].VmCmd = line
       CALL handleVM(c, FALSE)
       RETURN GO_OUT
@@ -2619,7 +2634,7 @@ FUNCTION checkStderr()
 END FUNCTION
 
 FUNCTION log(s STRING)
-  IF NOT _verbose THEN
+  IF NOT _verbose AND _opt_logfile IS NULL THEN
     RETURN
   END IF
   CALL writeToLog(s)
@@ -2804,8 +2819,9 @@ END FUNCTION
 
 #+computes a temporary file name
 FUNCTION makeTempName()
-  DEFINE tmpDir, tmpName, curr STRING
+  DEFINE tmpDir, tmpName, sbase, curr STRING
   DEFINE sb base.StringBuffer
+  DEFINE i INT
   IF isWin() THEN
     LET tmpDir = fgl_getenv("TEMP")
   ELSE
@@ -2818,10 +2834,16 @@ FUNCTION makeTempName()
   CALL sb.replace(":", "_", 0)
   CALL sb.replace(".", "_", 0)
   CALL sb.replace("-", "_", 0)
-  CALL sb.append(".tmp")
-  LET curr = sb.toString()
-  LET tmpName = os.Path.join(tmpDir, SFMT("fgl_%1_%2", fgl_getpid(), curr))
-  RETURN tmpName
+  LET sbase = SFMT("fgl_%1_%2", fgl_getpid(), sb.toString())
+  LET sbase = os.Path.join(tmpDir, sbase)
+  FOR i = 1 TO 10000
+    LET tmpName = SFMT("%1%2.tmp", sbase, i)
+    IF NOT os.Path.exists(tmpName) THEN
+      RETURN tmpName
+    END IF
+  END FOR
+  CALL myErr("makeTempName:Can't allocate a unique name")
+  RETURN NULL
 END FUNCTION
 
 FUNCTION sendFileToVM(vmidx INT, num INT, name STRING)
@@ -3472,4 +3494,325 @@ FUNCTION rmrf(dirname STRING)
   END IF
   --DISPLAY "rmrf:",cmd
   RUN cmd
+END FUNCTION
+
+FUNCTION eatWS() RETURNS STRING
+  DEFINE buf, u STRING
+  DEFINE len INT
+  LET buf = _p.buf
+  LET len = buf.getLength();
+  IF (_p.pos >= len) THEN
+    RETURN -1;
+  END IF
+  LET u = buf.getCharAt(_p.pos);
+  WHILE _p.pos <= len AND (EQ(u, ' ') || EQ(u, '\n') || EQ(u, '\\'))
+    LET _p.pos = _p.pos + 1;
+    LET u = buf.getCharAt(_p.pos);
+  END WHILE
+  RETURN u
+END FUNCTION
+
+FUNCTION getChar() RETURNS STRING
+  DEFINE u STRING
+  LET u = eatWS()
+  LET _p.pos = _p.pos + 1
+  RETURN u
+END FUNCTION
+
+FUNCTION identFromBuf()
+  DEFINE buf, u STRING
+  DEFINE i, len INT
+  LET buf = _p.buf;
+  LET u = buf.getCharAt(_p.pos);
+  LET i = 0;
+  LET len = buf.getLength();
+  WHILE (_p.pos <= len
+      AND NOT (u.equals(' ') || u.equals('{') || u.equals('}')))
+    LET _p.pos = _p.pos + 1
+    LET u = buf.getCharAt(_p.pos);
+    LET i = i + 1;
+  END WHILE
+  --//copy ident portion to ident
+  LET _p.ident = buf.subString(_p.pos - i, _p.pos - 1);
+END FUNCTION
+
+FUNCTION getValueWithSeparator(separator STRING)
+  DEFINE value, buf, u STRING
+  DEFINE len INT
+  LET _p.pos = _p.pos + 1 --// remove first "
+  LET buf = _p.buf;
+  LET len = buf.getLength();
+  WHILE (_p.pos <= len)
+    LET u = buf.getCharAt(_p.pos);
+    --DISPLAY "getValueWithSeparator1:", u
+    CASE
+      WHEN u == '\\'
+        LET _p.pos = _p.pos + 1
+        LET u = buf.getCharAt(_p.pos);
+        --DISPLAY "getValueWithSeparator2:", u
+        LET value = value, IIF(u == 'n', '\n', u)
+      WHEN u == separator
+        LET _p.pos = _p.pos + 1
+        EXIT WHILE
+      OTHERWISE
+        LET value = value, u
+    END CASE
+    LET _p.pos = _p.pos + 1
+  END WHILE
+  --DISPLAY "getValueWithSeparator:'", value, "'"
+  RETURN value;
+END FUNCTION
+
+FUNCTION getToken()
+  DEFINE numbuf, u STRING
+  DEFINE testnum INT
+  --LET numbuf = ""
+  LET u = eatWS();
+  IF u == -1 THEN
+    RETURN TOK_None
+  END IF
+  WHILE (testnum := u) IS NOT NULL --// isdigit
+    LET numbuf = numbuf, u;
+    LET _p.pos = _p.pos + 1
+    LET u = _p.buf.getCharAt(_p.pos);
+    --DISPLAY "getToken:'", u, "',numbuf:'", numbuf, "'"
+  END WHILE
+
+  IF numbuf.getLength() <> 0 THEN
+    LET _p.number = numbuf
+    --DISPLAY "p.number:", p.number
+    RETURN TOK_Number
+  END IF
+
+  IF EQ(u, '\"') || EQ(u, "\'") THEN
+    --DISPLAY "getValueWithSeparator:", u
+    LET _p.value = getValueWithSeparator(u)
+    RETURN TOK_Value;
+  ELSE
+    --DISPLAY "identFromBuf:"
+    CALL identFromBuf();
+    LET _p.value = NULL;
+    RETURN TOK_Ident;
+  END IF
+END FUNCTION
+
+FUNCTION parseTcl(vmidx INT, s STRING)
+  DEFINE result BOOLEAN
+  MYASSERT(_p.active == FALSE)
+  LET _p.active = TRUE
+  LET _p.pos = 1
+  LET _p.buf = s
+  LET _p.number = NULL
+  LET result = TRUE
+  WHILE (result AND _p.pos <= s.getLength())
+    MYASSERT(getToken() == TOK_Ident)
+    CASE
+      WHEN _p.ident == "meta"
+        LET result = handleParseMeta(vmidx);
+      WHEN _p.ident == "om"
+        LET result = handleParseOm(vmidx);
+      OTHERWISE
+        CALL myErr(SFMT("invalid token:%1", _p.ident));
+    END CASE
+    LET _p.pos = _p.pos + 1
+  END WHILE
+  MYASSERT(result == TRUE)
+  LET _p.active = FALSE
+END FUNCTION
+
+FUNCTION node(id INT) RETURNS om.DomNode
+  {
+  DEFINE fid, len INT
+  LET fid = id + 1
+  LET len = _aui.getLength()
+  IF len == 0 THEN
+    RETURN NULL
+  END IF
+  MYASSERT(fid >= 1 AND fid <= len)
+  RETURN _aui[fid]
+  }
+  UNUSED_VAR(id)
+  RETURN NULL
+END FUNCTION
+
+FUNCTION handleParseOm(vmidx INT)
+  --var st={};
+  --beforeOm(st);
+  --_iList=[];
+  MYASSERT(handleParseOmInt(vmidx) == TRUE)
+  --renderNodesInt();
+  --afterOm(st);
+  --_iList=[];
+  RETURN TRUE;
+END FUNCTION
+
+FUNCTION handleParseOmInt(vmidx INT)
+  DEFINE firstLetter STRING
+  DEFINE parentId INT
+  DEFINE parentNode, n om.DomNode
+  MYASSERT(getToken() == TOK_Number)
+  MYASSERT(EQ(getChar(), '{'))
+  WHILE (getChar() == '{')
+    MYASSERT(getToken() == TOK_Ident)
+    LET firstLetter = _p.ident.getCharAt(1);
+    CASE
+      WHEN (firstLetter == 'a') --//'a'n or 'a'ppendNode
+        MYASSERT(getToken() == TOK_Number)
+        LET parentId = _p.number;
+        LET parentNode = node(parentId);
+        LET n = handleAppendNode(vmidx, parentNode);
+        MYASSERT(n IS NOT NULL)
+        IF (parentNode IS NOT NULL) THEN
+          CALL parentNode.appendChild(n)
+        END IF
+
+      WHEN (firstLetter == 'u') --//'u'n or 'u'pdateNode
+        MYASSERT(getToken() == TOK_Number)
+        {
+        LET n = node(_p.number);
+        MYASSERT(n IS NOT NULL)
+        MYASSERT(handleUpdateNode(n) == TRUE)
+        }
+      WHEN (firstLetter == 'r') --//'r'n or 'r'emoveNode
+        MYASSERT(getToken() == TOK_Number)
+        {
+        CALL handleRemoveNode(_p.number);
+        }
+      OTHERWISE
+        CALL myErr(SFMT("firstletter is:%1", firstLetter))
+        RETURN FALSE
+    END CASE
+    MYASSERT(EQ(getChar(), '}'))
+  END WHILE
+  RETURN TRUE;
+END FUNCTION
+
+FUNCTION handleParseMeta(vmidx INT)
+  DEFINE name, value STRING
+  MYASSERT(getToken() == TOK_Ident) --"Connection"
+  MYASSERT(EQ(getChar(), '{'))
+  WHILE EQ(getChar(), '{')
+    MYASSERT(getToken() == TOK_Ident)
+    LET name = _p.ident
+    MYASSERT(getToken() == TOK_Value)
+    LET value = _p.value
+    --DISPLAY "name:", name, ",value:", value
+    CASE
+      WHEN name == "runtimeVersion"
+        LET _s[vmidx].vmVersion = parseVersion(value)
+        CALL log(SFMT("parsed %1 -> vmVersion:%2", name, _s[vmidx].vmVersion))
+        {
+        WHEN name == "filetransferVersion"
+          LET _vmFTVersion = parseInt(value)
+          CALL log(SFMT("parsed %1 -> _vmFTVersion:%2", name, _vmFTVersion))
+        }
+    END CASE
+    MYASSERT(EQ(getChar(), '}'))
+  END WHILE
+  RETURN TRUE
+END FUNCTION
+
+FUNCTION newNode(
+    parentNode om.DomNode, nodeName STRING, nodeId INT)
+    RETURNS om.DomNode
+  UNUSED_VAR(parentNode)
+  UNUSED_VAR(nodeName)
+  UNUSED_VAR(nodeId)
+  {
+  DEFINE n om.DomNode
+  IF parentNode IS NULL THEN
+    MYASSERT(_doc IS NULL)
+    LET _doc = om.DomDocument.create(nodeName)
+    LET n = _doc.getDocumentElement()
+    LET _root = n
+  ELSE
+    LET n = parentNode.createChild(nodeName)
+  END IF
+  CALL n.setAttribute("id", nodeId)
+  CASE
+    WHEN nodeName == "FunctionCall"
+      LET _functionCall = n
+  END CASE
+  RETURN n
+  }
+  RETURN NULL
+END FUNCTION
+
+FUNCTION handleAppendNode(vmidx INT, parentNode om.DomNode) RETURNS om.DomNode
+  DEFINE nodeName STRING
+  DEFINE nodeId INT
+  DEFINE n, ch om.DomNode
+  MYASSERT(getToken() == TOK_Ident)
+  LET nodeName = _p.ident;
+  MYASSERT(getToken() == TOK_Number)
+  LET nodeId = _p.number;
+  IF (parentNode IS NULL AND nodeId != 0) THEN
+    RETURN NULL;
+  END IF
+  MYASSERT(EQ(getChar(), '{'))
+  LET n = newNode(parentNode, nodeName, nodeId);
+  --LET _aui[nodeId + 1] = n;
+  --_iList.push(n);
+  MYASSERT(handleNodeAttr(n) == TRUE)
+  MYASSERT(EQ(getChar(), '{'))
+  WHILE (getChar() == '{')
+    LET ch = handleAppendNode(vmidx, n);
+    MYASSERT(ch IS NOT NULL)
+    CALL n.appendChild(ch)
+    MYASSERT(EQ(getChar(), '}'))
+  END WHILE
+  RETURN n
+END FUNCTION
+
+FUNCTION handleNodeAttr(n om.DomNode)
+  DEFINE d TStringDict
+  DEFINE name STRING
+  WHILE (getChar() == '{')
+    MYASSERT(getToken() == TOK_Ident)
+    LET name = _p.ident;
+    MYASSERT(getToken() == TOK_Value)
+    --//set the attribute
+    LET d[name] = _p.value
+    CALL n.setAttribute(name, _p.value)
+    MYASSERT(EQ(getChar(), '}'))
+  END WHILE
+  CALL afterUpdateDone(n, d)
+  RETURN TRUE;
+END FUNCTION
+
+FUNCTION handleUpdateNode(n om.DomNode)
+  DEFINE d TStringDict
+  DEFINE name, val, oldval STRING
+  MYASSERT(EQ(getChar(), '{'))
+  WHILE (getChar() == '{')
+    MYASSERT(getToken() == TOK_Ident)
+    LET name = _p.ident;
+    MYASSERT(getToken() == TOK_Value)
+    LET val = _p.value
+    LET oldval = n.getAttribute(name)
+    IF NEQ(oldval, val) THEN
+      LET d[name] = oldval
+      CALL n.setAttribute(name, _p.value)
+    END IF
+    MYASSERT(EQ(getChar(), '}'))
+  END WHILE
+  CALL afterUpdateDone(n, d)
+  RETURN TRUE;
+END FUNCTION
+
+FUNCTION afterUpdateDone(n om.DomNode, changed TStringDict)
+  --DEFINE tag STRING
+  --DEFINE isMenuAction BOOLEAN
+  UNUSED_VAR(n)
+  UNUSED_VAR(changed)
+  --CALL checkFTItem(n, changed)
+  --IF NOT _qa THEN
+  --  RETURN
+  --END IF
+  {
+  LET tag = n.getTagName()
+  IF (isMenuAction := (tag == "MenuAction")) == TRUE OR tag == "Action" THEN
+    CALL handleQAReady(n, isMenuAction)
+  END IF
+  }
 END FUNCTION

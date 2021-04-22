@@ -8,7 +8,7 @@
 	fglform -M $<
 
 
-all: fgljp.42m mygetopt.42m runonserver.42m getgdcpath.42m
+all: fgljp.42m mygetopt.42m runonserver.42m getgdcpath.42m fgljpssh.42m
 
 demo: fgljp.42m demo.42m demo.42f
 	./fgljp demo.42m a b
