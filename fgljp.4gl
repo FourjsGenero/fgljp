@@ -2322,6 +2322,26 @@ FUNCTION backslash2slash(src STRING)
   RETURN replace(src, "\\", "/")
 END FUNCTION
 
+FUNCTION backslash2slashCnt(src STRING) RETURNS(STRING, INT)
+  DEFINE occ INT
+  DEFINE repl STRING
+  LET occ = countOccur(src, "\\")
+  LET repl = replace(src, "\\", "/")
+  RETURN repl, occ
+END FUNCTION
+
+FUNCTION countOccur(src STRING, sub STRING) RETURNS INT
+  DEFINE start, occ, sublen INT
+  LET sublen = sub.getLength()
+  LET start = 1
+  WHILE (start := src.getIndexOf(sub, start)) > 0
+    DISPLAY "start:", start
+    LET occ = occ + 1
+    LET start = start + sublen
+  END WHILE
+  RETURN occ
+END FUNCTION
+
 FUNCTION clientSideName(name STRING, subDir STRING) RETURNS STRING
   DEFINE b base.StringBuffer
   LET b = base.StringBuffer.create()
@@ -3804,10 +3824,10 @@ FUNCTION handleAppendNode(vmidx INT, parentNode om.DomNode) RETURNS om.DomNode
 END FUNCTION
 
 FUNCTION checkImage(n om.DomNode, name STRING, value STRING)
-  DEFINE tag, oldVal, newVal, buf STRING
+  DEFINE tag, oldVal, slashed, newVal, buf STRING
   DEFINE ch om.DomNode
   DEFINE isImage BOOLEAN
-  DEFINE valueStart, valueEnd INT
+  DEFINE valueStart, valueEnd, occ INT
   LET tag = n.getTagName()
   --DISPLAY "setAttribute:",tag,",name:",name,",value:",value
   IF name == "value"
@@ -3831,16 +3851,18 @@ FUNCTION checkImage(n om.DomNode, name STRING, value STRING)
         AND oldVal.getIndexOf("font:", 1) <> 1}
         THEN
       LET newVal = _p.buf.subString(valueStart, valueEnd)
-      MYASSERT(oldVal == newVal)
-      --just add a FT2 like marker and
+      --replace '\\' with '/' and add a FT2 like marker and
       --manipulate the protocol line
+      CALL backslash2slashCnt(oldVal) RETURNING slashed, occ
+      MYASSERT(oldVal.getLength() + occ == newVal.getLength())
+
       LET newVal = "__VM__/", oldVal, "?F=1"
       LET buf = _p.buf
       LET _p.buf =
           buf.subString(1, valueStart - 1),
           newVal,
           buf.subString(valueEnd + 1, buf.getLength())
-      LET _p.pos = _p.pos + 11
+      LET _p.pos = (_p.pos + 11) - occ
       --DISPLAY "!!! set image:'", newVal, "',oldVal:'", oldVal, "'"
       CALL log(SFMT("checkImage: replace '%1' with '%2'", oldVal, newVal))
     END IF
@@ -3929,7 +3951,7 @@ FUNCTION printOmInt(n om.DomNode, indent INT)
 END FUNCTION
 
 FUNCTION hasAttr(n om.DomNode, attrName STRING)
-  DEFINE cnt,i INT
+  DEFINE cnt, i INT
   LET cnt = n.getAttributesCount()
   FOR i = 1 TO cnt
     IF n.getAttributeName(i) == attrName THEN
