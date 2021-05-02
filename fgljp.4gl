@@ -1050,6 +1050,8 @@ FUNCTION handleGBCPath(x INT, path STRING)
   DEFINE fname STRING
   DEFINE cut BOOLEAN
   DEFINE idx1, idx2, idx3 INT
+  DEFINE d TStringDict
+  DEFINE url URI
   LET cut = TRUE
   IF path.getIndexOf("/gbc/index.html", 1) == 1 THEN
     CALL setAppCookie(x, path)
@@ -1074,6 +1076,9 @@ FUNCTION handleGBCPath(x INT, path STRING)
       WHEN path.getIndexOf("/gbc/__VM__/", 1) == 1
         LET fname = path.subString(6, path.getLength())
         IF fname.getIndexOf("?F=1", 1) > 0 THEN
+          --remove the __VM__ prefix made by us
+          CALL getURLQueryDict(fname) RETURNING d, url
+          LET fname = url.getPath()
           LET fname = fname.subString(8, fname.getLength())
           --DISPLAY "fname:'", fname, "'"
         ELSE
@@ -2399,7 +2404,7 @@ FUNCTION getURLQueryDict(surl STRING) RETURNS(TStringDict, URI)
       LET d[name] = value
     END IF
   END WHILE
-  --DISPLAY "getURLQueryDict:", util.JSON.stringify(d)
+  --DISPLAY "getURLQueryDict:", surl, ":", util.JSON.stringify(d), ":", url.getPath()
   RETURN d, url
 END FUNCTION
 
@@ -3832,7 +3837,7 @@ FUNCTION checkImage(n om.DomNode, name STRING, value STRING)
   --DISPLAY "setAttribute:",tag,",name:",name,",value:",value
   IF name == "value"
       AND (tag == "FormField" OR tag == "Matrix" OR tag == "TableColumn") THEN
-    CALL printOmInt(n, 2)
+    --CALL printOmInt(n, 2)
     LET ch = n.getFirstChild()
     LET isImage = (ch IS NOT NULL) AND (ch.getTagName() == "Image")
     IF isImage THEN
@@ -3856,7 +3861,7 @@ FUNCTION checkImage(n om.DomNode, name STRING, value STRING)
       CALL backslash2slashCnt(oldVal) RETURNING slashed, occ
       MYASSERT(oldVal.getLength() + occ == newVal.getLength())
 
-      LET newVal = "__VM__/", oldVal, "?F=1"
+      LET newVal = "__VM__/", slashed, "?F=1"
       LET buf = _p.buf
       LET _p.buf =
           buf.subString(1, valueStart - 1),
