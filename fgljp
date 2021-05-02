@@ -5,6 +5,7 @@ realpath() {
 
 SCRIPT_NAME=`realpath $0`
 FGLJPDIR=`dirname $SCRIPT_NAME` 
+export FGL_LENGTH_SEMANTICS="CHAR"
 export LC_ALL="en_US.UTF-8"
 #we recompile everything always: hence avoid version clashes
 make -C $FGLJPDIR clean_prog all > /dev/null

@@ -133,6 +133,8 @@ TYPE TConnectionRec RECORD
   cliputfile STRING,
   vmgetfile STRING,
   vmgetfilenum INT,
+  doc om.DomDocument, --aui tree
+  aui DYNAMIC ARRAY OF om.DomNode, --node storage
   isHTTP BOOLEAN, --HTTP related members
   path STRING,
   method STRING,
@@ -226,18 +228,16 @@ TYPE TclP RECORD
   buf STRING,
   number INT,
   value STRING,
+  valueStart INT,
   ident STRING,
   active BOOLEAN
 END RECORD
 
 DEFINE _p TclP
---DEFINE _aui DYNAMIC ARRAY OF om.DomNode --node storage
---DEFINE _doc om.DomDocument
 
 MAIN
   DEFINE socket ServerSocket
   DEFINE port INT
-  --DEFINE numkeys INT
   DEFINE htpre STRING
   DEFINE uapre, gbcpre, priv, pub STRING
   DEFINE addr InetAddress
@@ -538,15 +538,15 @@ PRIVATE FUNCTION parseArgs()
 
   CALL mygetopt.initialize(gr, "fgljp", mygetopt.copyArguments(1), o)
   WHILE mygetopt.getopt(gr) == mygetopt.SUCCESS
-    LET opt_arg = gr[1].opt_arg
-    CASE gr[1].opt_char
+    LET opt_arg = mygetopt.opt_arg(gr)
+    CASE mygetopt.opt_char(gr)
       WHEN 'V'
         DISPLAY "1.00"
         EXIT PROGRAM 0
       WHEN 'v'
         LET _verbose = TRUE
       WHEN 'h'
-        CALL mygetopt.displayUsage(gr, "<program> ?arg? ?arg?")
+        CALL mygetopt.displayUsage(gr, "?program? ?arg? ?arg?")
         EXIT PROGRAM 0
       WHEN 'p'
         LET _opt_port = opt_arg
@@ -1073,7 +1073,12 @@ FUNCTION handleGBCPath(x INT, path STRING)
         END IF
       WHEN path.getIndexOf("/gbc/__VM__/", 1) == 1
         LET fname = path.subString(6, path.getLength())
-        LET cut = FALSE --we pass the whole URL
+        IF fname.getIndexOf("?F=1", 1) > 0 THEN
+          LET fname = fname.subString(8, fname.getLength())
+          --DISPLAY "fname:'", fname, "'"
+        ELSE
+          LET cut = FALSE --we pass the whole URL
+        END IF
       OTHERWISE
         LET fname = "gbc://", path.subString(6, path.getLength())
     END CASE
@@ -1249,7 +1254,7 @@ FUNCTION processFile(x INT, fname STRING, cache BOOLEAN)
       END CASE
       LET txt = readTextFile(fname)
       LET hdrs = getCacheHeaders(cache, etag)
-      --DISPLAY "processTextFile:", fname, " ct:", ct
+      --DISPLAY "processTextFile:", fname, " ct:", ct, " txt:", limitPrintStr(txt)
       CALL writeResponseCtHdrs(x, txt, ct, hdrs)
     OTHERWISE
       LET ct = "application/octet-stream"
@@ -1298,17 +1303,21 @@ END FUNCTION
 
 FUNCTION writeHTTP(x INT, s STRING)
   DEFINE js java.lang.String
-  LET js = s
   IF s IS NULL THEN
     RETURN
   END IF
+  LET js = s
+  CALL writeHTTPBytes(x, js.getBytes(StandardCharsets.UTF_8))
+END FUNCTION
+
+FUNCTION writeHTTPBytes(x INT, bytes MyByteArray)
   LET _s[x].dOut =
       IIF(_s[x].dOut IS NOT NULL, _s[x].dOut, createDout(_s[x].chan))
   MYASSERT(_s[x].dOut IS NOT NULL)
   TRY
-    CALL _s[x].dOut.write(js.getBytes(StandardCharsets.UTF_8))
+    CALL _s[x].dOut.write(bytes)
   CATCH
-    DISPLAY "ERROR writeHTTP:", err_get(status)
+    CALL myErr(SFMT("writeHTTPBytes:%1", err_get(status)))
   END TRY
 END FUNCTION
 
@@ -1368,12 +1377,15 @@ FUNCTION writeToVMNoEncaps(vmidx INT, s STRING)
   CALL writeChannel(vmidx, _encoder.encode(CharBuffer.wrap(jstring)))
 END FUNCTION
 
-FUNCTION writeHTTPFile(x INT, fn STRING)
+FUNCTION writeHTTPFile(x INT, fn STRING, ctlen INT)
   DEFINE f java.io.File
+  DEFINE bytes MyByteArray
   LET f = File.create(fn)
   LET _s[x].dOut =
       IIF(_s[x].dOut IS NOT NULL, _s[x].dOut, createDout(_s[x].chan))
-  CALL _s[x].dOut.write(Files.readAllBytes(f.toPath()))
+  LET bytes = Files.readAllBytes(f.toPath())
+  MYASSERT(bytes.getLength() == ctlen)
+  CALL _s[x].dOut.write(bytes)
 END FUNCTION
 
 FUNCTION writeResponse(x INT, content STRING)
@@ -1504,22 +1516,30 @@ FUNCTION writeResponseInt2(
     headers DYNAMIC ARRAY OF STRING,
     code STRING)
   DEFINE content_length INT
+  DEFINE js java.lang.String
+  DEFINE bytes MyByteArray
   MYASSERT(_s[x].chan.isBlocking())
 
   CALL writeHTTPLine(x, SFMT("HTTP/1.1 %1", code))
   CALL writeHTTPCommon(x)
-
-  LET content_length = content.getLength()
+  IF content IS NULL THEN
+    LET content = " " CLIPPED
+  END IF
+  LET js = content
+  LET bytes = js.getBytes(StandardCharsets.UTF_8)
+  --note we must use content length from the actual byte count
+  LET content_length = bytes.getLength()
   CALL writeHTTPHeaders(x, headers)
   CALL writeHTTPLine(x, SFMT("Content-Length: %1", content_length))
   IF ct IS NOT NULL THEN
     CALL writeHTTPLine(x, SFMT("Content-Type: %1", ct))
   END IF
   CALL writeHTTPLine(x, "")
-  CALL writeHTTP(x, content)
+  CALL writeHTTPBytes(x, bytes)
 END FUNCTION
 
 FUNCTION writeResponseFileHdrs(x INT, fn STRING, ct STRING, headers TStringArr)
+  DEFINE ctlen INT
   IF NOT os.Path.exists(fn) THEN
     CALL http404(x, fn)
     RETURN
@@ -1529,10 +1549,11 @@ FUNCTION writeResponseFileHdrs(x INT, fn STRING, ct STRING, headers TStringArr)
   CALL writeHTTPCommon(x)
 
   CALL writeHTTPHeaders(x, headers)
-  CALL writeHTTPLine(x, SFMT("Content-Length: %1", os.Path.size(fn)))
+  LET ctlen = os.Path.size(fn);
+  CALL writeHTTPLine(x, SFMT("Content-Length: %1", ctlen))
   CALL writeHTTPLine(x, SFMT("Content-Type: %1", ct))
   CALL writeHTTPLine(x, "")
-  CALL writeHTTPFile(x, fn)
+  CALL writeHTTPFile(x, fn, ctlen)
 END FUNCTION
 
 FUNCTION extractMetaVar(line STRING, varname STRING, forceFind BOOLEAN)
@@ -1991,7 +2012,12 @@ FUNCTION handleLine(c INT, line STRING)
         CALL lookupNextImage(c)
         RETURN GO_OUT
       END IF
-      --CALL parseTcl(c, line)
+      CALL parseTcl(c, line)
+      IF NOT _p.buf.equals(line) THEN
+        DISPLAY "_p.buf:", _p.buf
+        LET line = _p.buf
+      END IF
+      --CALL printOmInt(_s[c].doc.getDocumentElement(),2)
       LET _s[c].VmCmd = line
       CALL handleVM(c, FALSE)
       RETURN GO_OUT
@@ -2503,10 +2529,6 @@ FUNCTION limitPrintStr(s STRING)
   END IF
 END FUNCTION
 
-FUNCTION alert(s STRING)
-  DISPLAY "ALERT:", s
-END FUNCTION
-
 FUNCTION parseVersion(version STRING)
   DEFINE fversion, testversion FLOAT
   DEFINE pointpos, major, idx INTEGER
@@ -2553,17 +2575,6 @@ END FUNCTION
 
 FUNCTION NEQ(s1 STRING, s2 STRING) RETURNS BOOLEAN
   RETURN NOT EQ(s1, s2)
-END FUNCTION
-
-FUNCTION hasAttr(n om.DomNode, attrName STRING)
-  DEFINE cnt, i INT
-  LET cnt = n.getAttributesCount()
-  FOR i = 1 TO cnt
-    IF n.getAttributeName(i) == attrName THEN
-      RETURN TRUE
-    END IF
-  END FOR
-  RETURN FALSE
 END FUNCTION
 
 FUNCTION quoteVMStr(s STRING)
@@ -3540,6 +3551,7 @@ FUNCTION getValueWithSeparator(separator STRING)
   DEFINE value, buf, u STRING
   DEFINE len INT
   LET _p.pos = _p.pos + 1 --// remove first "
+  LET _p.valueStart = _p.pos
   LET buf = _p.buf;
   LET len = buf.getLength();
   WHILE (_p.pos <= len)
@@ -3620,29 +3632,21 @@ FUNCTION parseTcl(vmidx INT, s STRING)
   LET _p.active = FALSE
 END FUNCTION
 
-FUNCTION node(id INT) RETURNS om.DomNode
-  {
+FUNCTION node(vmidx INT, id INT) RETURNS om.DomNode
   DEFINE fid, len INT
+  DEFINE aui DYNAMIC ARRAY OF om.DomNode
+  LET aui = _s[vmidx].aui
   LET fid = id + 1
-  LET len = _aui.getLength()
+  LET len = aui.getLength()
   IF len == 0 THEN
     RETURN NULL
   END IF
   MYASSERT(fid >= 1 AND fid <= len)
-  RETURN _aui[fid]
-  }
-  UNUSED_VAR(id)
-  RETURN NULL
+  RETURN aui[fid]
 END FUNCTION
 
 FUNCTION handleParseOm(vmidx INT)
-  --var st={};
-  --beforeOm(st);
-  --_iList=[];
   MYASSERT(handleParseOmInt(vmidx) == TRUE)
-  --renderNodesInt();
-  --afterOm(st);
-  --_iList=[];
   RETURN TRUE;
 END FUNCTION
 
@@ -3659,7 +3663,7 @@ FUNCTION handleParseOmInt(vmidx INT)
       WHEN (firstLetter == 'a') --//'a'n or 'a'ppendNode
         MYASSERT(getToken() == TOK_Number)
         LET parentId = _p.number;
-        LET parentNode = node(parentId);
+        LET parentNode = node(vmidx, parentId);
         LET n = handleAppendNode(vmidx, parentNode);
         MYASSERT(n IS NOT NULL)
         IF (parentNode IS NOT NULL) THEN
@@ -3668,16 +3672,12 @@ FUNCTION handleParseOmInt(vmidx INT)
 
       WHEN (firstLetter == 'u') --//'u'n or 'u'pdateNode
         MYASSERT(getToken() == TOK_Number)
-        {
-        LET n = node(_p.number);
+        LET n = node(vmidx, _p.number);
         MYASSERT(n IS NOT NULL)
-        MYASSERT(handleUpdateNode(n) == TRUE)
-        }
+        MYASSERT(handleUpdateNode(vmidx, n) == TRUE)
       WHEN (firstLetter == 'r') --//'r'n or 'r'emoveNode
         MYASSERT(getToken() == TOK_Number)
-        {
-        CALL handleRemoveNode(_p.number);
-        }
+        CALL handleRemoveNode(vmidx, _p.number);
       OTHERWISE
         CALL myErr(SFMT("firstletter is:%1", firstLetter))
         RETURN FALSE
@@ -3712,30 +3712,69 @@ FUNCTION handleParseMeta(vmidx INT)
   RETURN TRUE
 END FUNCTION
 
+FUNCTION handleRemoveNode(vmidx INT, nodeId INT)
+  CALL recursiveRemove(vmidx, node(vmidx, nodeId), nodeId == 0)
+END FUNCTION
+
+FUNCTION recursiveRemove(vmidx INT, n om.DomNode, isRoot BOOLEAN)
+  DEFINE ch, next om.DomNode
+  MYASSERT(n IS NOT NULL)
+  IF NOT isRoot THEN
+    MYASSERT(n.getParent() IS NOT NULL)
+  END IF
+  LET ch = n.getFirstChild()
+  WHILE ch IS NOT NULL
+    LET next = ch.getNext()
+    CALL recursiveRemove(vmidx, ch, FALSE)
+    LET ch = next
+  END WHILE
+  IF NOT isRoot THEN
+    CALL n.getParent().removeChild(n)
+  END IF
+  LET _s[vmidx].aui[nodeId(n) + 1] = NULL
+  {
+  CASE
+    WHEN n == _functionCall
+      CALL log("reset _functionCall")
+      LET _functionCall = NULL
+    WHEN n == _root
+      CALL log("reset _root")
+      LET _root = NULL
+  END CASE
+  IF getAttrI(n, "_usedInVMCmd") == 1 THEN
+    CALL removeNodeUsedInVMCmd(n)
+  END IF
+  }
+  --to check in the code if a node did already die,
+  --just do: IF n.parent IS NULL
+END FUNCTION
+
 FUNCTION newNode(
-    parentNode om.DomNode, nodeName STRING, nodeId INT)
+    vmidx INT, parentNode om.DomNode, nodeName STRING, nodeId INT)
     RETURNS om.DomNode
+  {
   UNUSED_VAR(parentNode)
   UNUSED_VAR(nodeName)
   UNUSED_VAR(nodeId)
-  {
+  }
   DEFINE n om.DomNode
+  DEFINE doc om.DomDocument
   IF parentNode IS NULL THEN
-    MYASSERT(_doc IS NULL)
-    LET _doc = om.DomDocument.create(nodeName)
-    LET n = _doc.getDocumentElement()
-    LET _root = n
+    MYASSERT(_s[vmidx].doc IS NULL)
+    LET doc = om.DomDocument.create(nodeName)
+    LET _s[vmidx].doc = doc
+    LET n = doc.getDocumentElement()
   ELSE
     LET n = parentNode.createChild(nodeName)
   END IF
   CALL n.setAttribute("id", nodeId)
+  {
   CASE
     WHEN nodeName == "FunctionCall"
       LET _functionCall = n
   END CASE
-  RETURN n
   }
-  RETURN NULL
+  RETURN n
 END FUNCTION
 
 FUNCTION handleAppendNode(vmidx INT, parentNode om.DomNode) RETURNS om.DomNode
@@ -3750,13 +3789,13 @@ FUNCTION handleAppendNode(vmidx INT, parentNode om.DomNode) RETURNS om.DomNode
     RETURN NULL;
   END IF
   MYASSERT(EQ(getChar(), '{'))
-  LET n = newNode(parentNode, nodeName, nodeId);
-  --LET _aui[nodeId + 1] = n;
-  --_iList.push(n);
-  MYASSERT(handleNodeAttr(n) == TRUE)
+  LET n = newNode(vmidx, parentNode, nodeName, nodeId);
+  LET _s[vmidx].aui[nodeId + 1] = n;
+  MYASSERT(handleNodeAttr(vmidx, n) == TRUE)
   MYASSERT(EQ(getChar(), '{'))
   WHILE (getChar() == '{')
     LET ch = handleAppendNode(vmidx, n);
+    CALL checkImage(ch, "value", NULL)
     MYASSERT(ch IS NOT NULL)
     CALL n.appendChild(ch)
     MYASSERT(EQ(getChar(), '}'))
@@ -3764,24 +3803,81 @@ FUNCTION handleAppendNode(vmidx INT, parentNode om.DomNode) RETURNS om.DomNode
   RETURN n
 END FUNCTION
 
-FUNCTION handleNodeAttr(n om.DomNode)
-  DEFINE d TStringDict
+FUNCTION checkImage(n om.DomNode, name STRING, value STRING)
+  DEFINE tag, oldVal, newVal, buf STRING
+  DEFINE ch om.DomNode
+  DEFINE isImage BOOLEAN
+  DEFINE valueStart, valueEnd INT
+  LET tag = n.getTagName()
+  --DISPLAY "setAttribute:",tag,",name:",name,",value:",value
+  IF name == "value"
+      AND (tag == "FormField" OR tag == "Matrix" OR tag == "TableColumn") THEN
+    CALL printOmInt(n, 2)
+    LET ch = n.getFirstChild()
+    LET isImage = (ch IS NOT NULL) AND (ch.getTagName() == "Image")
+    IF isImage THEN
+      LET value = n.getAttribute("name")
+    END IF
+  END IF
+  IF name == "image" OR name == "href" OR isImage THEN
+    LET valueStart = n.getAttribute("_valueStart")
+    LET valueStart = IIF(valueStart IS NULL, _p.valueStart, valueStart)
+    LET valueEnd = n.getAttribute("_valueEnd")
+    LET valueEnd = IIF(valueEnd IS NULL, _p.pos - 2, valueEnd)
+    LET oldVal = n.getAttribute(name)
+    --we need to prefix windows paths
+    IF oldVal.getIndexOf(":", 1) == 2 {AND
+        oldVal.getIndexOf("__VM__/", 1) <> 1
+        AND oldVal.getIndexOf("font:", 1) <> 1}
+        THEN
+      LET newVal = _p.buf.subString(valueStart, valueEnd)
+      MYASSERT(oldVal == newVal)
+      --just add a FT2 like marker and
+      --manipulate the protocol line
+      LET newVal = "__VM__/", oldVal, "?F=1"
+      LET buf = _p.buf
+      LET _p.buf =
+          buf.subString(1, valueStart - 1),
+          newVal,
+          buf.subString(valueEnd + 1, buf.getLength())
+      LET _p.pos = _p.pos + 11
+      --DISPLAY "!!! set image:'", newVal, "',oldVal:'", oldVal, "'"
+      CALL log(SFMT("checkImage: replace '%1' with '%2'", oldVal, newVal))
+    END IF
+  END IF
+END FUNCTION
+
+FUNCTION setAttribute(
+    vmidx INT, n om.DomNode, name STRING, value STRING, update BOOLEAN)
+  UNUSED_VAR(vmidx)
+  CALL n.setAttribute(name, value)
+  CASE
+    WHEN name == "image" OR name == "href" OR (update AND name == "value")
+      CALL checkImage(n, name, value)
+    WHEN name == "value"
+      CALL n.setAttribute("_valueStart", _p.valueStart)
+      CALL n.setAttribute("_valueEnd", _p.pos - 2)
+  END CASE
+END FUNCTION
+
+FUNCTION handleNodeAttr(vmidx INT, n om.DomNode)
+  --DEFINE d TStringDict
   DEFINE name STRING
   WHILE (getChar() == '{')
     MYASSERT(getToken() == TOK_Ident)
     LET name = _p.ident;
     MYASSERT(getToken() == TOK_Value)
     --//set the attribute
-    LET d[name] = _p.value
-    CALL n.setAttribute(name, _p.value)
+    --LET d[name] = _p.value
+    CALL setAttribute(vmidx, n, name, _p.value, FALSE)
     MYASSERT(EQ(getChar(), '}'))
   END WHILE
-  CALL afterUpdateDone(n, d)
+  --CALL afterUpdateDone(n, d)
   RETURN TRUE;
 END FUNCTION
 
-FUNCTION handleUpdateNode(n om.DomNode)
-  DEFINE d TStringDict
+FUNCTION handleUpdateNode(vmidx INT, n om.DomNode)
+  --DEFINE d TStringDict
   DEFINE name, val, oldval STRING
   MYASSERT(EQ(getChar(), '{'))
   WHILE (getChar() == '{')
@@ -3791,28 +3887,108 @@ FUNCTION handleUpdateNode(n om.DomNode)
     LET val = _p.value
     LET oldval = n.getAttribute(name)
     IF NEQ(oldval, val) THEN
-      LET d[name] = oldval
-      CALL n.setAttribute(name, _p.value)
+      --LET d[name] = oldval
+      CALL setAttribute(vmidx, n, name, _p.value, TRUE)
     END IF
     MYASSERT(EQ(getChar(), '}'))
   END WHILE
-  CALL afterUpdateDone(n, d)
+  --CALL afterUpdateDone(n, d)
   RETURN TRUE;
 END FUNCTION
 
+{
 FUNCTION afterUpdateDone(n om.DomNode, changed TStringDict)
   --DEFINE tag STRING
   --DEFINE isMenuAction BOOLEAN
-  UNUSED_VAR(n)
-  UNUSED_VAR(changed)
   --CALL checkFTItem(n, changed)
   --IF NOT _qa THEN
   --  RETURN
   --END IF
-  {
   LET tag = n.getTagName()
   IF (isMenuAction := (tag == "MenuAction")) == TRUE OR tag == "Action" THEN
     CALL handleQAReady(n, isMenuAction)
   END IF
-  }
+END FUNCTION
+}
+
+FUNCTION printOmInt(n om.DomNode, indent INT)
+  DEFINE x STRING
+  DEFINE ch om.DomNode
+  DEFINE i INT
+  FOR i = 1 TO indent
+    LET x = x, " "
+  END FOR
+  LET x = x, nodeDesc(n)
+  --LET x = x
+  DISPLAY x
+  LET ch = n.getFirstChild()
+  WHILE ch IS NOT NULL
+    CALL printOmInt(ch, indent + 2)
+    LET ch = ch.getNext()
+  END WHILE
+END FUNCTION
+
+FUNCTION hasAttr(n om.DomNode, attrName STRING)
+  DEFINE cnt,i INT
+  LET cnt = n.getAttributesCount()
+  FOR i = 1 TO cnt
+    IF n.getAttributeName(i) == attrName THEN
+      RETURN TRUE
+    END IF
+  END FOR
+  RETURN FALSE
+END FUNCTION
+
+{
+FUNCTION checkFTItem(n om.DomNode, changed TStringDict)
+  DEFINE tag STRING
+  LET tag = n.getTagName()
+  IF changed.contains("image") THEN
+    DISPLAY "changed image:",changed["image"]," of:",tag
+  ELSE
+    CASE tag
+      WHEN "ImageFont"
+        CALL requestFT(n, "href", changed)
+      WHEN "Image"
+        VAR p = n.getParent()
+        VAR ptag = p.getTagName()
+        CASE
+          WHEN ptag == "FormField"
+            CALL requestFT(n, "value", changed)
+          WHEN ptag == "Matrix" OR ptag = "TableColumn"
+            DISPLAY "checkFTItem: Matrix TableColumn for Image not handled yet"
+        END CASE
+    END CASE
+  END IF
+END FUNCTION
+}
+
+FUNCTION getAttrI(n om.DomNode, attr STRING)
+  DEFINE intVal INT
+  DEFINE value STRING
+  LET value = n.getAttribute(attr)
+  LET intVal = value
+  LET intVal = IIF(intVal IS NULL, 0, intVal)
+  RETURN intVal
+END FUNCTION
+
+FUNCTION isActive(n om.DomNode) RETURNS BOOLEAN
+  RETURN getAttrI(n, "active")
+END FUNCTION
+
+FUNCTION nodeId(n om.DomNode) RETURNS INT
+  RETURN getAttrI(n, "id")
+END FUNCTION
+
+FUNCTION nodeDesc(n om.DomNode)
+  DEFINE i, len INT
+  DEFINE sb base.StringBuffer
+  LET sb = base.StringBuffer.create()
+  CALL sb.append(n.getTagName())
+  LET len = n.getAttributesCount()
+  FOR i = 1 TO len
+    CALL sb.append(
+        SFMT(" %1='%2'", n.getAttributeName(i), n.getAttributeValue(i)))
+  END FOR
+  RETURN sb.toString()
 END FUNCTION

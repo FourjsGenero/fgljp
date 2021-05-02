@@ -8,6 +8,7 @@ pushd %CD%
 %THISDRIVE%
 cd %FGLJPDIR%
 rem compile mygetopt first as it is used b fgljp
+set FGL_LENGTH_SEMANTICS="CHAR"
 set LANG=.fglutf8
 fglcomp -M -r -Wall mygetopt.4gl
 IF %errorlevel% NEQ 0 GOTO myend

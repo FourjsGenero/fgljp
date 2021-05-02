@@ -118,9 +118,10 @@ MAIN
   CALL initialize(gr, arg_val(0), copyArguments(1), _options)
 
   WHILE getopt(gr) == SUCCESS
-    LET opt_char = gr[1].opt_char
-    LET opt_arg = gr[1].opt_arg
-    LET option_index = gr[1].option_index
+    LET opt_char = opt_char(gr)
+    LET opt_arg = opt_arg(gr)
+    LET option_index = option_index(gr)
+
     CASE opt_char
       WHEN 'v'
         DISPLAY "Version: 1.54"
@@ -160,6 +161,18 @@ MAIN
   END IF
 
 END MAIN
+
+PUBLIC FUNCTION opt_arg(gr GetoptR) RETURNS STRING
+  RETURN gr[1].opt_arg
+END FUNCTION
+
+PUBLIC FUNCTION opt_char(gr GetoptR) RETURNS STRING
+  RETURN gr[1].opt_char
+END FUNCTION
+
+PUBLIC FUNCTION option_index(gr GetoptR) RETURNS STRING
+  RETURN gr[1].option_index
+END FUNCTION
 
 #+ Copy the command line arguments into an array of string
 #+

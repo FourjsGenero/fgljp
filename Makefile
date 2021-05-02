@@ -16,6 +16,9 @@ demo: fgljp.42m demo.42m demo.42f
 demogmi: fgljp.42m demo.42m demo.42f
 	./fgljp -r demo.42m a b
 
+demogdc: fgljp.42m demo.42m demo.42f
+	GDC=1 ./fgljp -v -g demo.42m a b
+
 format:
 	rm -f *.4gl~
 	fglcomp -M --format --fo-inplace mygetopt.4gl

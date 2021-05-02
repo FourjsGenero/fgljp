@@ -7,7 +7,7 @@ IMPORT JAVA java.lang.Thread
 MAIN
   DEFINE entries fgljp.TStartEntries
   DEFINE tmp STRING
-  CALL start_fgljp() RETURNING entries, tmp
+  CALL start_fgljp() RETURNING entries.*, tmp
   CALL start_ssh(entries.port)
   IF os.Path.exists(tmp) THEN
     CALL kill(entries.pid)
@@ -63,7 +63,7 @@ FUNCTION start_fgljp() RETURNS(fgljp.TStartEntries, STRING)
   LET ch = waitOpen(tmp)
   LET line = waitReadLine(ch, tmp)
   CALL util.JSON.parse(line, entries)
-  RETURN entries, tmp
+  RETURN entries.*, tmp
 END FUNCTION
 
 FUNCTION start_ssh(localPort INT)
