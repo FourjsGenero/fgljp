@@ -2767,7 +2767,7 @@ FUNCTION getGDCPath()
 END FUNCTION
 
 FUNCTION openBrowser(url)
-  DEFINE url, cmd, browser STRING
+  DEFINE url, cmd, browser, pre, lbrowser STRING
   IF fgl_getenv("SLAVE") IS NOT NULL THEN
     CALL log("gdcm SLAVE set,return")
     RETURN
@@ -2787,7 +2787,19 @@ FUNCTION openBrowser(url)
     IF isMac() AND browser <> "./gdcm.app/Contents/MacOS/gdcm" THEN
       LET cmd = SFMT("open -a %1 %2", quote(browser), url)
     ELSE
-      LET cmd = SFMT("%1 %2", quote(browser), url)
+      LET lbrowser = browser.toLowerCase()
+      --no path separator and no .exe given: we use start
+      IF isWin()
+          AND browser.getIndexOf("\\", 1) == 0
+          AND lbrowser.getIndexOf(".exe", 1) == 0 THEN
+        IF browser == "edge" THEN
+          LET browser = "start"
+          LET url = "microsoft-edge:", url
+        ELSE
+          LET pre = "start "
+        END IF
+      END IF
+      LET cmd = SFMT('%1%2 %3', pre, quote(browser), url)
     END IF
   ELSE
     CASE
