@@ -135,6 +135,8 @@ TYPE TConnectionRec RECORD
   vmgetfilenum INT,
   doc om.DomDocument, --aui tree
   aui DYNAMIC ARRAY OF om.DomNode, --node storage
+  maxNodeId INT, --maximum AUI tree id
+  rnFTNodeId INT, --pending FT node id
   isHTTP BOOLEAN, --HTTP related members
   path STRING,
   method STRING,
@@ -2018,12 +2020,8 @@ FUNCTION handleLine(c INT, line STRING)
         RETURN GO_OUT
       END IF
       CALL parseTcl(c, line)
-      IF NOT _p.buf.equals(line) THEN
-        DISPLAY "_p.buf:", _p.buf
-        LET line = _p.buf
-      END IF
       --CALL printOmInt(_s[c].doc.getDocumentElement(),2)
-      LET _s[c].VmCmd = line
+      LET _s[c].VmCmd = _p.buf
       CALL handleVM(c, FALSE)
       RETURN GO_OUT
     OTHERWISE
@@ -2962,7 +2960,7 @@ FUNCTION handleFTPutFile(vmidx INT, dIn DataInputStream, num INT, remaining INT)
 END FUNCTION
 
 FUNCTION handleFTGetFile(vmidx INT, dIn DataInputStream, num INT, remaining INT)
-  DEFINE numBytes INT
+  DEFINE numBytes, mId INT
   DEFINE name, sname STRING
   DEFINE ba MyByteArray
   CALL getNameC(dIn) RETURNING name, numBytes
@@ -2978,12 +2976,13 @@ FUNCTION handleFTGetFile(vmidx INT, dIn DataInputStream, num INT, remaining INT)
   LET _s[vmidx].vmgetfile = name
   LET _s[vmidx].vmgetfilenum = num
   LET sname = os.Path.baseName(name)
-  --the following is a hack because it uses a fixed node id for
-  --the function call
-  --TODO parse the protocol to know the maximum node id
+  --the following is a hack because it fakes a function call
+  --not coming from the VM
+  LET _s[vmidx].rnFTNodeId = _s[vmidx].maxNodeId + 1
+  LET mId = _s[vmidx].rnFTNodeId
   LET _s[vmidx].VmCmd =
-      SFMT('om 1 {{an 0 FunctionCall 10000 {{isSystem "0"} {moduleName "standard"} {name "fgl_getfile"} {paramCount "2"} {returnCount "0"}} {{FunctionCallParameter 10001 {{dataType "STRING"} {isNull "0"} {value "%1"}} {}} {FunctionCallParameter 10002 {{dataType "STRING"} {isNull "0"} {value "../tmp_getfile.upload"}} {}}}}}',
-          sname)
+      SFMT('om 1 {{an 0 FunctionCall %1 {{isSystem "0"} {moduleName "standard"} {name "fgl_getfile"} {paramCount "2"} {returnCount "0"}} {{FunctionCallParameter %2 {{dataType "STRING"} {isNull "0"} {value "%3"}} {}} {FunctionCallParameter %4 {{dataType "STRING"} {isNull "0"} {value "../tmp_getfile.upload"}} {}}}}}',
+          mId, mId + 1, sname, mId + 2)
   --we feed the fake cmd to the GBC
   --after the GBC did upload the file we need to send the file to the VM
   CALL handleVM(vmidx, FALSE)
@@ -3066,6 +3065,7 @@ FUNCTION handleFTEof(vmidx INT, num INT)
   DEFINE found BOOLEAN
   DEFINE ftg FTGetImage
   DEFINE dest, ftname STRING
+  DEFINE mId INT
   CALL log(SFMT("handleFTEof for num:%1", num))
   MYASSERT(num == _s[vmidx].writeNum OR num == _s[vmidx].writeNum2)
   IF num > 0 THEN
@@ -3088,12 +3088,13 @@ FUNCTION handleFTEof(vmidx INT, num INT)
     LET ftname = FTName(dest)
     LET ftname = backslash2slash(ftname)
     LET dest = backslash2slash(dest)
-    --the following is a hack because it uses a fixed node id for
-    --the function call
-    --TODO parse the protocol to know the maximum node id
+    --the following is a hack because it fakes
+    --a function call
+    LET _s[vmidx].rnFTNodeId = _s[vmidx].maxNodeId + 1
+    LET mId = _s[vmidx].rnFTNodeId
     LET _s[vmidx].VmCmd =
-        SFMT('om 1 {{an 0 FunctionCall 10000 {{isSystem "0"} {moduleName "standard"} {name "fgl_putfile"} {paramCount "2"} {returnCount "0"}} {{FunctionCallParameter 10001 {{dataType "STRING"} {isNull "0"} {value "%1"}} {}} {FunctionCallParameter 10002 {{dataType "STRING"} {isNull "0"} {value "%2"}} {}}}}}',
-            ftname, dest)
+        SFMT('om 1 {{an 0 FunctionCall %1 {{isSystem "0"} {moduleName "standard"} {name "fgl_putfile"} {paramCount "2"} {returnCount "0"}} {{FunctionCallParameter %2 {{dataType "STRING"} {isNull "0"} {value "%3"}} {}} {FunctionCallParameter %4 {{dataType "STRING"} {isNull "0"} {value "%5"}} {}}}}}',
+            mId, mId + 1, ftname, mId + 2, dest)
     --we feed the fake cmd to the GBC
     --after the GBC did get the file we need to complete the FTEof status
     CALL handleVM(vmidx, FALSE)
@@ -3404,7 +3405,7 @@ FUNCTION sendGetImage(vmidx INT, num INT, fileName STRING)
 END FUNCTION
 
 FUNCTION sendAck(vmidx INT, num INT, fileName STRING)
-  DISPLAY SFMT("sendAck vmidx:%1,num:%2,fileName:%3", vmidx, num, fileName)
+  --DISPLAY SFMT("sendAck vmidx:%1,num:%2,fileName:%3", vmidx, num, fileName)
   CALL sendGetImageOrAck(vmidx, num, fileName, FALSE)
 END FUNCTION
 
@@ -3687,12 +3688,28 @@ FUNCTION handleParseOm(vmidx INT)
   RETURN TRUE;
 END FUNCTION
 
+FUNCTION removePendingFT(vmidx INT)
+  DEFINE rn STRING
+  --we insert the remove node cmd for the pending file transfer
+  LET rn = SFMT("{rn %1} ", _s[vmidx].rnFTNodeId)
+  LET _s[vmidx].rnFTNodeId = 0
+  LET _p.buf =
+      _p.buf.subString(1, _p.pos - 1),
+      rn,
+      _p.buf.subString(_p.pos, _p.buf.getLength())
+  LET _p.pos = _p.pos + rn.getLength()
+  CALL log(SFMT("removePendingFT: %1", limitPrintStr(_p.buf)))
+END FUNCTION
+
 FUNCTION handleParseOmInt(vmidx INT)
   DEFINE firstLetter STRING
   DEFINE parentId INT
   DEFINE parentNode, n om.DomNode
   MYASSERT(getToken() == TOK_Number)
   MYASSERT(EQ(getChar(), '{'))
+  IF _s[vmidx].rnFTNodeId <> 0 THEN
+    CALL removePendingFT(vmidx)
+  END IF
   WHILE (getChar() == '{')
     MYASSERT(getToken() == TOK_Ident)
     LET firstLetter = _p.ident.getCharAt(1);
@@ -3805,6 +3822,9 @@ FUNCTION newNode(
     LET n = parentNode.createChild(nodeName)
   END IF
   CALL n.setAttribute("id", nodeId)
+  IF nodeId > _s[vmidx].maxNodeId THEN
+    LET _s[vmidx].maxNodeId = nodeId
+  END IF
   {
   CASE
     WHEN nodeName == "FunctionCall"
