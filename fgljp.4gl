@@ -115,6 +115,7 @@ TYPE TConnectionRec RECORD
   VmCmd STRING, --last VM cmd
   --wait BOOLEAN, --token for socket communication
   FTV2 BOOLEAN, --VM has filetransfer V2
+  FTFC BOOLEAN, --VM has filetransfer FrontCall
   ftNum INT, --current FT num
   writeNum INT, --FT id1
   writeNum2 INT, --FT id2
@@ -189,7 +190,6 @@ DEFINE _RWWchildren DICTIONARY OF TStringArr
 DEFINE _utf8 Charset
 DEFINE _encoder CharsetEncoder
 DEFINE _decoder CharsetDecoder
-DEFINE _metaSeen BOOLEAN
 DEFINE _opt_port STRING
 DEFINE _opt_startfile STRING
 DEFINE _opt_logfile STRING
@@ -698,7 +698,7 @@ FUNCTION parseHttpLine(x INT, s STRING)
   LET _s[x].method = a[1]
   LET path = a[2]
   IF path.getIndexOf("Disposition=attachment", 1) > 0 THEN
-    --DISPLAY "!!!Disposition=attachment for:", s
+    DISPLAY "!!!Disposition=attachment for:", s
     LET _s[x].cdattachment = TRUE
   END IF
   LET _s[x].path = path
@@ -1355,12 +1355,12 @@ END FUNCTION
 
 --we need to correct encapsulation
 FUNCTION handleClientMeta(vmidx INT, meta STRING)
-  DEFINE ftreply STRING
+  DEFINE ftreply, ftFC STRING
   LET meta = replace(meta, '{encapsulation "0"}', '{encapsulation "1"}')
-  LET ftreply = IIF(_s[vmidx].FTV2, "2", "1")
-  LET meta =
-      replace(meta, '{filetransfer "0"}', SFMT('{filetransfer "%1"}', ftreply))
-  --DISPLAY "meta:", meta
+  LET ftreply = IIF(_s[vmidx].FTV2, '{filetransfer "2"}', '{filetransfer "1"}')
+  LET ftFC = IIF(_s[vmidx].FTFC, '{filetransferFC "1"}', "")
+  LET meta = replace(meta, '{filetransfer "0"}', SFMT('%1%2', ftreply, ftFC))
+  DISPLAY "meta:", meta
   RETURN meta
 END FUNCTION
 
@@ -1430,6 +1430,7 @@ FUNCTION handleCDAttachment(x INT)
     LET path = path.subString(5, path.getLength())
   END IF
   LET vmidx = vmidxFromAppCookie(x, path)
+  CALL log(SFMT("handleCDAttachment:x:%1 path:%2 vmidx:%3", x, path, vmidx))
   IF vmidx < 1 THEN
     CALL http404(x, _s[x].path)
     RETURN
@@ -1442,9 +1443,15 @@ FUNCTION handleCDAttachment(x INT)
     CALL writeResponseInt2(x, "", "", hdrs, "204 No Content")
   ELSE
     LET _s[vmidx].cliputfile = NULL
-    --actually deliver the putfile
-    IF NOT findFile(x, path) THEN
-      CALL http404(x, _s[x].path)
+    --actually deliver the putfile to the browser
+    IF _s[vmidx].FTFC AND _s[vmidx].vmputfile IS NOT NULL THEN
+      LET path = FTName(_s[vmidx].vmputfile)
+      LET _s[vmidx].vmputfile = NULL
+      CALL processFile(x, path, TRUE)
+    ELSE
+      IF NOT findFile(x, path) THEN
+        CALL http404(x, _s[x].path)
+      END IF
     END IF
     CALL handleVMResultForPutfile(x, vmidx, path)
   END IF
@@ -1463,12 +1470,13 @@ FUNCTION handleVMResultForPutfile(x INT, vmidx INT, path STRING)
           SFMT("handleCDAttachment:found x:%1 for vmidx:%2 body:%3 ",
               i, vmidx, body, printSel(i)))
       MYASSERT(_s[i].procId IS NOT NULL)
-      IF _opt_program IS NULL THEN -- FT mode
+      MYASSERT(body.getIndexOf('{}{{FunctionCallEvent 0{{result "0"}}{}}}', 1) > 0)
+      IF _opt_program IS NULL AND NOT _s[vmidx].FTFC THEN -- simulated FT mode
         MYASSERT(_s[vmidx].vmputfile IS NOT NULL)
-        MYASSERT(body.getIndexOf('{}{{FunctionCallEvent 0{{result "0"}}{}}}', 1) > 0)
         LET num = getWriteNum(vmidx)
         CALL resetWriteNum(vmidx, num)
         LET _s[vmidx].vmputfile = NULL
+        --we end now the file transfer to the VM
         CALL sendFTStatus(vmidx, num, FTOk)
         CALL lookupNextImage(vmidx)
       ELSE
@@ -1603,7 +1611,7 @@ END FUNCTION
 
 FUNCTION handleMetaSel(vmidx INT, line STRING)
   DEFINE pp, procIdWaiting, sessId, encaps, compression, rtver STRING
-  DEFINE ftV STRING
+  DEFINE ftV, ftFC STRING
   DEFINE ppidx, waitIdx INT
   DEFINE children TStringArr
   LET _s[vmidx].isVM = TRUE
@@ -1618,6 +1626,8 @@ FUNCTION handleMetaSel(vmidx INT, line STRING)
   END IF
   LET ftV = extractMetaVar(line, "filetransferVersion", FALSE)
   LET _s[vmidx].FTV2 = IIF(ftV == "2", TRUE, FALSE)
+  LET ftFC = extractMetaVar(line, "filetransferFC", FALSE)
+  LET _s[vmidx].FTFC = IIF(ftFC == "1", TRUE, FALSE)
   LET rtver = extractMetaVar(line, "runtimeVersion", TRUE)
   LET _s[vmidx].vmVersion = parseVersion(rtver)
   LET _s[vmidx].procId = extractProcId(extractMetaVar(line, "procId", TRUE))
@@ -1671,33 +1681,6 @@ FUNCTION decideStartOrNewTask(vmidx INT)
     CALL log("decideStartOrNewTask: send filetransfer")
     CALL writeToVMNoEncaps(vmidx, "filetransfer\n")
   END IF
-END FUNCTION
-
-FUNCTION handleMeta(key SelectionKey, buf ByteBuffer, pos INT)
-  DEFINE line STRING
-  UNUSED_VAR(key)
-  UNUSED_VAR(pos)
-  LET line = _decoder.decode(buf).toString()
-  {
-  IF _currline.getIndexOf("\n", 1) == 0 THEN
-    CALL buf.position(pos) --continue at pos
-    CALL warning(SFMT("_currline not complete:%1", _currline))
-    RETURN
-  END IF
-  }
-  IF line.getIndexOf("meta ", 1) == 1 THEN
-    CALL log(SFMT("got meta:%1", line))
-  ELSE
-    DISPLAY "got http:", line
-  END IF
-  LET _metaSeen = TRUE
-
-  --CALL attachEncapsBuf(key)
-  --{frontEndID2 "123"}
-  --LET meta =
-  --  SFMT('meta Client{ {name "%1"} {version "%2"} {encapsulation "1"} {filetransfer "%3"} {encoding "UTF-8"}\n',
-  --    _clientName, _clientVersion, ft)
-  --CALL writeChannel(_currChan, _encoder.encode(CharBuffer.wrap(meta)))
 END FUNCTION
 
 FUNCTION setEmptyConnection(c INT)
@@ -2019,9 +2002,14 @@ FUNCTION handleLine(c INT, line STRING)
         CALL lookupNextImage(c)
         RETURN GO_OUT
       END IF
-      CALL parseTcl(c, line)
-      --CALL printOmInt(_s[c].doc.getDocumentElement(),2)
-      LET _s[c].VmCmd = _p.buf
+      IF _s[c].FTV2 AND _s[c].FTFC THEN
+        --no need to parse the protocol anymore
+        LET _s[c].VmCmd = line
+      ELSE
+        CALL parseTcl(c, line)
+        --CALL printOmInt(_s[c].doc.getDocumentElement(),2)
+        LET _s[c].VmCmd = _p.buf
+      END IF
       CALL handleVM(c, FALSE)
       RETURN GO_OUT
     OTHERWISE
@@ -2973,19 +2961,24 @@ FUNCTION handleFTGetFile(vmidx INT, dIn DataInputStream, num INT, remaining INT)
   CALL log(
       SFMT("handleFTGetFile name:'%1',num:%2, remaining:%3",
           name, num, remaining))
-  LET _s[vmidx].vmgetfile = name
-  LET _s[vmidx].vmgetfilenum = num
-  LET sname = os.Path.baseName(name)
-  --the following is a hack because it fakes a function call
-  --not coming from the VM
-  LET _s[vmidx].rnFTNodeId = _s[vmidx].maxNodeId + 1
-  LET mId = _s[vmidx].rnFTNodeId
-  LET _s[vmidx].VmCmd =
-      SFMT('om 1 {{an 0 FunctionCall %1 {{isSystem "0"} {moduleName "standard"} {name "fgl_getfile"} {paramCount "2"} {returnCount "0"}} {{FunctionCallParameter %2 {{dataType "STRING"} {isNull "0"} {value "%3"}} {}} {FunctionCallParameter %4 {{dataType "STRING"} {isNull "0"} {value "../tmp_getfile.upload"}} {}}}}}',
-          mId, mId + 1, sname, mId + 2)
-  --we feed the fake cmd to the GBC
-  --after the GBC did upload the file we need to send the file to the VM
-  CALL handleVM(vmidx, FALSE)
+  IF _s[vmidx].FTFC THEN
+    --the VM did send the FT frontcall already at this point
+    CALL sendFileToVM(vmidx, num, name)
+  ELSE
+    LET _s[vmidx].vmgetfile = name
+    LET _s[vmidx].vmgetfilenum = num
+    LET sname = os.Path.baseName(name)
+    --the following is a hack because it fakes a function call
+    --not coming from the VM
+    LET _s[vmidx].rnFTNodeId = _s[vmidx].maxNodeId + 1
+    LET mId = _s[vmidx].rnFTNodeId
+    LET _s[vmidx].VmCmd =
+        SFMT('om 1 {{an 0 FunctionCall %1 {{isSystem "0"} {moduleName "standard"} {name "fgl_getfile"} {paramCount "2"} {returnCount "0"}} {{FunctionCallParameter %2 {{dataType "STRING"} {isNull "0"} {value "%3"}} {}} {FunctionCallParameter %4 {{dataType "STRING"} {isNull "0"} {value "../tmp_getfile.upload"}} {}}}}}',
+            mId, mId + 1, sname, mId + 2)
+    --we feed the fake cmd to the GBC
+    --after the GBC did upload the file we need to send the file to the VM
+    CALL handleVM(vmidx, FALSE)
+  END IF
   RETURN remaining
 END FUNCTION
 
@@ -3081,7 +3074,7 @@ FUNCTION handleFTEof(vmidx INT, num INT)
   IF found THEN
     CALL handleDelayedImage(vmidx, ftg.*)
   END IF
-  IF _s[vmidx].vmputfile IS NOT NULL THEN
+  IF NOT _s[vmidx].FTFC AND _s[vmidx].vmputfile IS NOT NULL THEN
     MYASSERT(_s[vmidx].vmputfile IS NOT NULL)
     MYASSERT(_s[vmidx].httpIdx > 0)
     LET dest = _s[vmidx].vmputfile
