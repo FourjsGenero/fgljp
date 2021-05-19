@@ -24,15 +24,21 @@ MAIN
     COMMAND "RUN WITHOUT WAITING"
       RUN SFMT("fglrun demo %1 %2", arg || "+", arg_val(2)) WITHOUT WAITING
     COMMAND "putfile"
+      {
+      OPEN WINDOW w AT 1,1 WITH 10 ROWS, 10 COLUMNS 
+      MENU 
+         COMMAND "exit"
+           EXIT MENU
+      END MENU
+      }
       CALL fgl_putfile("logo.png","logo2.png")
+      --CLOSE WINDOW w
       MESSAGE "putfile successful"
     COMMAND "getfile"
       TRY
       CALL fgl_getfile("logo2.png","logo3.png")
       CATCH
-        OPEN FORM f FROM "demo"
-        DISPLAY FORM f
-        DISPLAY err_get(status) TO t
+        ERROR err_get(status)
         CONTINUE MENU
       END TRY
       CALL showForm("logo3.png")
@@ -47,6 +53,7 @@ FUNCTION showForm(img STRING)
   OPEN FORM f FROM "demo"
   DISPLAY FORM f
   DISPLAY "Entry" TO entry
+  DISPLAY "ui.InInterface.filenameToURI:",ui.Interface.filenameToURI(img)
   DISPLAY sfmt('{"value": "WebComponent", "src":"%1"}',ui.Interface.filenameToURI(img)) TO w
   DISPLAY img TO logo
 END FUNCTION
