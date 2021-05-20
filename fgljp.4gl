@@ -8,6 +8,7 @@ IMPORT os
 IMPORT util
 IMPORT FGL mygetopt
 IMPORT JAVA com.fourjs.fgl.lang.FglRecord
+IMPORT JAVA org.w3c.dom.Document
 IMPORT JAVA java.time.LocalDateTime
 IMPORT JAVA java.time.ZoneOffset
 IMPORT JAVA java.time.Instant
@@ -48,9 +49,12 @@ IMPORT JAVA java.util.HashSet
 IMPORT JAVA java.util.regex.Matcher
 IMPORT JAVA java.util.regex.Pattern
 IMPORT JAVA java.util.Iterator --<SelectionKey>
+IMPORT JAVA java.util.Base64
+IMPORT JAVA java.util.Base64.Encoder
 IMPORT JAVA java.lang.String
 IMPORT JAVA java.lang.Object
 IMPORT JAVA java.lang.Integer
+IMPORT JAVA java.security.SecureRandom
 --IMPORT JAVA java.lang.Byte
 --IMPORT JAVA java.lang.Boolean
 --IMPORT JAVA java.util.Arrays
@@ -78,7 +82,8 @@ CONSTANT S_WAITFORVM = "WaitForVM"
 CONSTANT S_FINISH = "Finish"
 CONSTANT PUTFILE_DELIVERED = "!!!!__putfile_delivered__!!!"
 
-CONSTANT APP_COOKIE = "XFJsApp"
+CONSTANT APP_COOKIE = "GENERO_APP"
+--CONSTANT SID_COOKIE = "GENERO_SID"
 
 CONSTANT GO_OUT = TRUE
 CONSTANT CLOSED = TRUE
@@ -1508,7 +1513,7 @@ END FUNCTION
 FUNCTION writeToVM(vmidx INT, s STRING)
   CALL log(SFMT("writeToVM:%1", s))
   IF _v[vmidx].wait THEN
-    DISPLAY "!!!!!!!!!!!!!!writeToVM wait pending:"
+    --DISPLAY "!!!!!!!!!!!!!!writeToVM wait pending:"
     LET _v[vmidx].toVMCmd = s
     RETURN
   END IF
@@ -1917,7 +1922,7 @@ FUNCTION handleConnection(key SelectionKey)
       LET _lastVM = v
       IF NOT _v[v].wait THEN
         IF _v[v].toVMCmd IS NOT NULL THEN
-          DISPLAY "!!!send after wait:", _v[v].toVMCmd
+          --DISPLAY "!!!send after wait:", _v[v].toVMCmd
           CALL writeToVM(v, _v[v].toVMCmd)
           LET _v[v].toVMCmd = NULL
         END IF
@@ -4373,4 +4378,17 @@ FUNCTION nodeDesc(n om.DomNode)
         SFMT(" %1='%2'", n.getAttributeName(i), n.getAttributeValue(i)))
   END FOR
   RETURN sb.toString()
+END FUNCTION
+
+FUNCTION genSID()
+  DEFINE rand SecureRandom
+  DEFINE barr MyByteArray
+  DEFINE enc Encoder
+  DEFINE s STRING
+  LET rand = SecureRandom.create()
+  LET barr = MyByteArray.create(25)
+  CALL rand.nextBytes(barr);
+  LET enc = Base64.getUrlEncoder().withoutPadding();
+  LET s = enc.encodeToString(barr);
+  RETURN s
 END FUNCTION
