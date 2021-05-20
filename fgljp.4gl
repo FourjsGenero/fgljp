@@ -2766,7 +2766,7 @@ FUNCTION writeChannel(vmidx INT, buf ByteBuffer)
   IF NOT _v[vmidx].chan.isBlocking() THEN
     --DISPLAY "configureBlocking:",printV(vmidx)
     MYASSERT(_currIdx > 0)
-    CALL configureBlocking(key: _v[vmidx].key, chan: _v[vmidx].chan)
+    CALL configureBlocking(_v[vmidx].key, _v[vmidx].chan)
     LET didSetBlocking = TRUE
     --ELSE
     --  DISPLAY "blocking:", printV(vmidx)
