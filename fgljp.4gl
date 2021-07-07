@@ -1533,7 +1533,7 @@ FUNCTION checkPutFileGetFile(x INT, vmidx INT, s STRING)
     CALL sendFileToVM(vmidx, _v[vmidx].vmgetfilenum, "tmp_getfile.upload")
   END IF
   IF _v[vmidx].cliputfile == PUTFILE_DELIVERED THEN
-    DISPLAY "body:'", _s[x].body, "'"
+    --DISPLAY "body:'", _s[x].body, "'"
     MYASSERT(_s[x].body.getIndexOf('{}{{FunctionCallEvent 0', 1) > 0)
     LET _s[x].body = NULL
     LET _v[vmidx].httpIdx = x
@@ -1696,6 +1696,7 @@ FUNCTION handleVMResultForPutfile(x INT, vmidx INT, path STRING)
       IF _opt_program IS NULL AND (NOT _v[vmidx].FTFC) THEN -- simulated FT mode
         CALL endPutfileFT(vmidx)
       ELSE
+        LET _v[vmidx].cliputfile = NULL
         MYASSERT(writeToVMWithProcId(x, _s[i].body, _s[i].procId) == TRUE)
       END IF
       LET _v[vmidx].httpIdx = i --mark the connection for VM answer
