@@ -1008,6 +1008,7 @@ FUNCTION handleUAProto(x INT, path STRING)
     LET vmidx = vmidxFromProcId(procId)
     IF vmidx == 0 THEN -- we get re trials of VM's no more existing
       CALL http404(x, path)
+      RETURN
     END IF
     LET vmCmd = _v[vmidx].VmCmd
     IF sessId IS NOT NULL THEN
