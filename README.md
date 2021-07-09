@@ -71,4 +71,4 @@ C:> <path_to_this_repository>\fgljp ?options? ?yourprogram? ?arg? ?arg?
 ```
 
 and it uses the fglcomp/fglrun in your PATH to compile and run fgljp.
-Of course you can add also <path_to_this_repository> in your PATH .
+Of course you can add also <path_to_this_repository> in your PATH to invoke fgljp without the path.

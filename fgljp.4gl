@@ -931,12 +931,11 @@ END FUNCTION
 FUNCTION vmidxFromProcId(procId STRING)
   DEFINE vmidx INT
   IF NOT _selDict.contains(procId) THEN
-    DISPLAY "!!!!procId:",
-        procId,
-        " not in _selDict:",
-        util.JSON.stringify(_selDict.getKeys())
+    CALL log(
+        SFMT("vmidxFromProcId: no procId '%1' in _selDict:%2",
+            procId, util.JSON.stringify(_selDict.getKeys())))
+    RETURN 0
   END IF
-  MYASSERT(_selDict.contains(procId))
   LET vmidx = _selDict[procId]
   MYASSERT(vmidx > 0 AND vmidx <= _v.getLength())
   RETURN vmidx
@@ -1007,6 +1006,9 @@ FUNCTION handleUAProto(x INT, path STRING)
       END IF
     END IF
     LET vmidx = vmidxFromProcId(procId)
+    IF vmidx == 0 THEN -- we get re trials of VM's no more existing
+      CALL http404(x, path)
+    END IF
     LET vmCmd = _v[vmidx].VmCmd
     IF sessId IS NOT NULL THEN
       LET _v[vmidx].sessId = sessId
@@ -1121,6 +1123,7 @@ FUNCTION sendToClient(
   --DISPLAY "sendToClient procId:", procId, ", ", printSel(x)
   IF NOT newtask THEN --sessId is also set in the newtask case
     LET vmidx = vmidxFromProcId(procId)
+    MYASSERT(vmidx != 0)
     IF vmCmd.getLength() > 0 THEN
       LET _v[vmidx].VmCmd = NULL
     END IF
@@ -1139,6 +1142,7 @@ FUNCTION sendToClient(
   IF vmclose THEN --must be the last check in _selDict
     LET hdrs[hdrs.getLength() + 1] = "X-FourJs-Closed: true"
     LET vmidx = vmidxFromProcId(procId)
+    MYASSERT(vmidx != 0)
     CALL setEmptyVMConnection(vmidx)
     CALL _selDict.remove(procId)
     --DISPLAY "  _selDict after remove:", util.JSON.stringify(_selDict.getKeys())
@@ -1361,8 +1365,8 @@ FUNCTION vmidxFromAppCookie(x INT, fname STRING)
               fname, printSel(x)))
       RETURN 0
     END IF
-  --ELSE
-  --  DISPLAY "  vmidxFromAppCookie:procId:", procId
+    --ELSE
+    --  DISPLAY "  vmidxFromAppCookie:procId:", procId
   END IF
   IF NOT _selDict.contains(procId) THEN
     CALL log(
@@ -2227,6 +2231,19 @@ FUNCTION didReadCompleteVMCmd(buf ByteBuffer)
   RETURN lastByte == 10
 END FUNCTION
 
+FUNCTION readChan(vmidx INT, numRead INT, chan SocketChannel, buf ByteBuffer)
+  DEFINE didRead INT
+  TRY
+    LET didRead = chan.read(buf)
+  CATCH
+    CALL log(
+        SFMT("readChan error vmidx:%1,numRead:%2,buf.position:%3,buf.limit:%4,error:%5",
+            vmidx, numRead, buf.position(), buf.limit(), err_get(status)))
+    LET didRead = -1
+  END TRY
+  RETURN didRead
+END FUNCTION
+
 --unfortunately we can't use neither
 --DataInputStream.readLine nor
 --BufferedReader.readLine because both stop already at '\r'
@@ -2234,13 +2251,14 @@ END FUNCTION
 FUNCTION readLineFromVM(vmidx INT, dataSize INT)
   DEFINE buf, newbuf ByteBuffer
   DEFINE chan SocketChannel
-  DEFINE bufsize, didRead, newsize, num, len, len1 INT
+  DEFINE bufsize, didRead, newsize, num, len, len1, numRead INT
   DEFINE js java.lang.String
   DEFINE s STRING
   LET chan = _v[vmidx].chan
   LET bufsize = IIF(dataSize > 0, dataSize, 30000)
   LET buf = ByteBuffer.allocate(bufsize)
-  LET didRead = chan.read(buf)
+  LET numRead = 1
+  LET didRead = readChan(vmidx, numRead, chan, buf)
   IF didRead == -1 THEN
     RETURN ""
   END IF
@@ -2256,7 +2274,8 @@ FUNCTION readLineFromVM(vmidx INT, dataSize INT)
       LET buf = newbuf
     END IF
     MYASSERT(buf.position() < buf.limit())
-    LET didRead = chan.read(buf)
+    LET numRead = numRead + 1
+    LET didRead = readChan(vmidx, numRead, chan, buf)
     IF didRead == -1 THEN
       RETURN ""
     END IF
