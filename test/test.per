@@ -1,0 +1,36 @@
+ACTION DEFAULTS
+  ACTION next(ACCELERATOR=TAB)
+END
+LAYOUT(TEXT="This is a simple form")
+GRID 
+{
+Entry       [entry       ]
+             You should see 'Webcomponent'
+             and the logo below
+Webcomponent[w                                   ]
+            [                                    ]
+            [                                    ]
+            [                                    ]
+            [                                    ]
+            [                                    ]
+            [                                    ]
+            [                                    ]
+            [                                    ]
+             You should see the FourJs logo below
+Image       [logo                                ]
+            [                                    ]
+            [                                    ]
+            [                                    ]
+            [                                    ]
+            [                                    ]
+            [                                    ]
+            [                                    ]
+            [                                    ]
+            [                                    ]
+
+}
+END
+ATTRIBUTES
+entry=FORMONLY.entry;
+WEBCOMPONENT w=FORMONLY.w,COMPONENTTYPE="test",SIZEPOLICY=FIXED,STRETCH=NONE;
+IMAGE logo=FORMONLY.logo,AUTOSCALE,SIZEPOLICY=FIXED;

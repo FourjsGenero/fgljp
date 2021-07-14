@@ -11,6 +11,7 @@
 all: fgljp.42m mygetopt.42m runonserver.42m getgdcpath.42m fgljpssh.42m
 
 demo: fgljp.42m demo.42m demo.42f
+#	./fgljp -v demo.42m a b
 	./fgljp demo.42m a b
 
 rundemo: demo.42m demo.42f
