@@ -158,7 +158,7 @@ window.fgljp = new Object;
   function sendAjax(events,what,recursive) {
     if (_xmlH!=null) {
       var req=_xmlH;
-      alert("abort _xmlH with: "+req.URL+","+req.EVENTS+","+req.WHAT);
+      mylog("abort _xmlH with: "+req.URL+","+req.EVENTS+","+req.WHAT);
       _xmlH.onreadystatechange = null;
       _xmlH.abort();
     }
