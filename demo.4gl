@@ -16,8 +16,8 @@ MAIN
     COMMAND "Processing"
       CALL testProcessing()
     ON ACTION message ATTRIBUTE(IMAGE = "smiley", TEXT = "Message")
-      LET num=num+1
-      MESSAGE sfmt("TEST%1",num)
+      LET num = num + 1
+      MESSAGE SFMT("TEST%1", num)
       --ON IDLE 10
       --  MESSAGE "IDLE"
     COMMAND "fc"
@@ -26,27 +26,27 @@ MAIN
       CALL showForm("logo.png")
     COMMAND "RUN"
       RUN SFMT("fglrun demo %1 %2", arg || "+", arg_val(2))
-    {
-    COMMAND "RUN xx"
-      RUN "fglrun xx"
-    }
+      {
+      COMMAND "RUN xx"
+        RUN "fglrun xx"
+      }
     COMMAND "RUN WITHOUT WAITING"
       RUN SFMT("fglrun demo %1 %2", arg || "+", arg_val(2)) WITHOUT WAITING
     COMMAND "putfile"
       {
-      OPEN WINDOW w AT 1,1 WITH 10 ROWS, 10 COLUMNS 
-      MENU 
+      OPEN WINDOW w AT 1,1 WITH 10 ROWS, 10 COLUMNS
+      MENU
          COMMAND "exit"
            EXIT MENU
       END MENU
       }
-      CALL fgl_putfile("logo.png","logo2.png")
+      CALL fgl_putfile("logo.png", "logo2.png")
       DISPLAY "putfile done"
       --CLOSE WINDOW w
       MESSAGE "putfile successful"
     COMMAND "getfile"
       TRY
-      CALL fgl_getfile("logo2.png","logo3.png")
+        CALL fgl_getfile("logo2.png", "logo3.png")
       CATCH
         ERROR err_get(status)
         CONTINUE MENU
@@ -63,9 +63,9 @@ END MAIN
 
 FUNCTION testProcessing()
   DEFINE i INT
-  OPEN WINDOW processing AT 1,1 WITH 10 ROWS,10 COLUMNS
-  FOR i=1 TO 3
-    MESSAGE sfmt("Processing %1",i)
+  OPEN WINDOW processing AT 1, 1 WITH 10 ROWS, 10 COLUMNS
+  FOR i = 1 TO 3
+    MESSAGE SFMT("Processing %1", i)
     CALL ui.Interface.refresh()
   END FOR
   CLOSE WINDOW processing
@@ -75,8 +75,10 @@ FUNCTION showForm(img STRING)
   OPEN FORM f FROM "demo"
   DISPLAY FORM f
   DISPLAY "Entry" TO entry
-  DISPLAY "ui.InInterface.filenameToURI:",ui.Interface.filenameToURI(img)
-  DISPLAY sfmt('{"value": "WebComponent", "src":"%1"}',ui.Interface.filenameToURI(img)) TO w
+  DISPLAY "ui.InInterface.filenameToURI:", ui.Interface.filenameToURI(img)
+  DISPLAY SFMT('{"value": "WebComponent", "src":"%1"}',
+          ui.Interface.filenameToURI(img))
+      TO w
   DISPLAY img TO logo
 END FUNCTION
 

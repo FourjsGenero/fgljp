@@ -198,8 +198,8 @@ END FUNCTION
 #+
 #+ @return An array of string
 PRIVATE FUNCTION expandArguments(
-  argv DYNAMIC ARRAY OF STRING)
-  RETURNS(INTEGER, DYNAMIC ARRAY OF STRING)
+    argv DYNAMIC ARRAY OF STRING)
+    RETURNS(INTEGER, DYNAMIC ARRAY OF STRING)
   DEFINE rv DYNAMIC ARRAY OF STRING
   DEFINE i INTEGER
   DEFINE argc INTEGER
@@ -289,10 +289,10 @@ END FUNCTION
 #+
 #+
 PUBLIC FUNCTION initialize(
-  gr GetoptR,
-  prog_name STRING,
-  argv DYNAMIC ARRAY OF STRING,
-  options GetoptOptions)
+    gr GetoptR,
+    prog_name STRING,
+    argv DYNAMIC ARRAY OF STRING,
+    options GetoptOptions)
   LET gr[1].prog_name = prog_name
   LET gr[1].next_char = NULL
   LET gr[1].opt_ind = 0
@@ -476,25 +476,25 @@ PUBLIC FUNCTION displayUsage(gr GetoptR, more_args STRING)
       CASE gr[1]._options[ind].arg_type
         WHEN NONE
           CALL sb.append(
-            SFMT("    -%1, --%2",
-              gr[1]._options[ind].opt_char, gr[1]._options[ind].name))
+              SFMT("    -%1, --%2",
+                  gr[1]._options[ind].opt_char, gr[1]._options[ind].name))
         WHEN OPTIONAL
           CALL sb.append(
-            SFMT("    -%1, --%2 [<arg>]",
-              gr[1]._options[ind].opt_char, gr[1]._options[ind].name))
+              SFMT("    -%1, --%2 [<arg>]",
+                  gr[1]._options[ind].opt_char, gr[1]._options[ind].name))
         WHEN REQUIRED
           CALL sb.append(
-            SFMT("    -%1, --%2 <arg>",
-              gr[1]._options[ind].opt_char, gr[1]._options[ind].name))
+              SFMT("    -%1, --%2 <arg>",
+                  gr[1]._options[ind].opt_char, gr[1]._options[ind].name))
       END CASE
     END IF
     IF sb.getLength() <= ALIGN_SIZE THEN
       LET delta = ALIGN_SIZE - sb.getLength()
       DISPLAY SFMT("%1%2%3",
-        sb.toString(), delta SPACES, gr[1]._options[ind].description)
+          sb.toString(), delta SPACES, gr[1]._options[ind].description)
     ELSE
       DISPLAY SFMT("%1\n%2%3",
-        sb.toString(), ALIGN_SIZE SPACES, gr[1]._options[ind].description)
+          sb.toString(), ALIGN_SIZE SPACES, gr[1]._options[ind].description)
     END IF
   END FOR
 END FUNCTION
@@ -643,7 +643,7 @@ PRIVATE FUNCTION parseShort(gr GetoptR) RETURNS INTEGER
     LET arg_key = gr[1].next_char.subString(1, 1)
     IF gr[1].next_char.getLength() > 1 THEN
       LET gr[1].next_char =
-        gr[1].next_char.subString(2, gr[1].next_char.getLength())
+          gr[1].next_char.subString(2, gr[1].next_char.getLength())
     ELSE
       LET gr[1].next_char = NULL
     END IF

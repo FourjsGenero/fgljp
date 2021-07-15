@@ -3421,8 +3421,8 @@ FUNCTION getGDCPath()
 END FUNCTION
 
 FUNCTION winQuoteUrl(url STRING) RETURNS STRING
-  LET url = replace(url,"%","^%")
-  LET url = replace(url,"&","^&")
+  LET url = replace(url, "%", "^%")
+  LET url = replace(url, "&", "^&")
   RETURN url
 END FUNCTION
 
@@ -3863,8 +3863,10 @@ END FUNCTION
 FUNCTION handleFTNotFound(vmidx INT, ftg FTGetImage)
   DEFINE x, idx INT
   DEFINE name, vmName STRING
-  IF ftg.httpIdx==-1 THEN
-    CALL myErr(SFMT("Did not find:%1 in your remote FGLGBCDIR, is FGLGBCDIR not set probably ?", ftg.name))
+  IF ftg.httpIdx == -1 THEN
+    CALL myErr(
+        SFMT("Did not find:%1 in your remote FGLGBCDIR, is FGLGBCDIR not set probably ?",
+            ftg.name))
   END IF
   MYASSERT(ftg.httpIdx > 0)
   LET x = ftg.httpIdx
