@@ -72,3 +72,24 @@ C:> <path_to_this_repository>\fgljp ?options? ?yourprogram? ?arg? ?arg?
 
 and it uses the fglcomp/fglrun in your PATH to compile and run fgljp.
 Of course you can add also <path_to_this_repository> in your PATH to invoke fgljp without the path.
+
+# Windows
+
+On Windows the command to invoke is simply
+```
+C:\<somepath>\fgljp>fgljp
+```
+(it's a straight .bat file compiling/running fgljp)
+you can set the BROWSER variable to the following values to start another
+browser than the default one:
+chrome,firefox,edge (IE: not supported)
+```
+set BROWSER=firefox && fgljp
+```
+
+# Mac
+
+possible BROWSER values: chrome,firefox,safari
+```
+BROWSER=chrome && fgljp
+```
