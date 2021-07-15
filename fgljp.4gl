@@ -3433,44 +3433,50 @@ FUNCTION openBrowser(url)
     RETURN
   END IF
   LET browser = fgl_getenv("BROWSER")
-  IF browser IS NOT NULL AND browser <> "default" AND browser <> "standard" THEN
-    IF browser == "gdcm" THEN
-      CASE
-        WHEN isMac()
-          LET browser = "./gdcm.app/Contents/MacOS/gdcm"
-        WHEN isWin()
-          LET browser = ".\\gdcm.exe"
-        OTHERWISE
-          LET browser = "./gdcm"
-      END CASE
-    END IF
-    IF isMac() AND browser <> "./gdcm.app/Contents/MacOS/gdcm" THEN
-      LET cmd = SFMT("open -a %1 '%2'", quote(browser), url)
-    ELSE
-      LET lbrowser = browser.toLowerCase()
-      --no path separator and no .exe given: we use start
-      IF isWin()
-          AND browser.getIndexOf("\\", 1) == 0
-          AND lbrowser.getIndexOf(".exe", 1) == 0 THEN
-        IF browser == "edge" THEN
-          LET browser = "start"
-          LET url = "microsoft-edge:", url
-        ELSE
-          LET pre = "start "
-        END IF
+  CASE
+    WHEN browser IS NOT NULL AND browser <> "default" AND browser <> "standard"
+      IF browser == "gdcm" THEN --TODO: gdcm
+        CASE
+          WHEN isMac()
+            LET browser = "./gdcm.app/Contents/MacOS/gdcm"
+          WHEN isWin()
+            LET browser = ".\\gdcm.exe"
+          OTHERWISE
+            LET browser = "./gdcm"
+        END CASE
       END IF
-      LET cmd = SFMT('%1%2 %3', pre, quote(browser), winQuoteUrl(url))
-    END IF
-  ELSE
-    CASE
-      WHEN isWin()
-        LET cmd = SFMT("start %1", winQuoteUrl(url))
-      WHEN isMac()
-        LET cmd = SFMT("open '%1'", url)
-      OTHERWISE --assume kinda linux
-        LET cmd = SFMT("xdg-open %1", url)
-    END CASE
-  END IF
+      CASE
+        WHEN isMac() AND browser <> "./gdcm.app/Contents/MacOS/gdcm"
+          IF browser == "chrome" THEN
+            LET browser="Google Chrome"
+          END IF
+          LET cmd = SFMT("open -a %1 '%2'", quote(browser), url)
+        WHEN isWin()
+          LET lbrowser = browser.toLowerCase()
+          --no path separator and no .exe given: we use start
+          IF browser.getIndexOf("\\", 1) == 0
+              AND lbrowser.getIndexOf(".exe", 1) == 0 THEN
+            IF browser == "edge" THEN
+              LET browser = "start"
+              LET url = "microsoft-edge:", url
+            ELSE
+              LET pre = "start "
+            END IF
+          END IF
+          LET cmd = SFMT('%1%2 %3', pre, quote(browser), winQuoteUrl(url))
+        OTHERWISE --Unix
+          LET cmd = SFMT("%1 '%2'", quote(browser), url)
+      END CASE
+    OTHERWISE
+      CASE
+        WHEN isWin()
+          LET cmd = SFMT("start %1", winQuoteUrl(url))
+        WHEN isMac()
+          LET cmd = SFMT("open '%1'", url)
+        OTHERWISE --assume kinda linux
+          LET cmd = SFMT("xdg-open '%1'", url)
+      END CASE
+  END CASE
   CALL log(SFMT("openBrowser:%1", cmd))
   RUN cmd WITHOUT WAITING
 END FUNCTION
