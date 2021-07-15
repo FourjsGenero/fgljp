@@ -3420,6 +3420,12 @@ FUNCTION getGDCPath()
   RETURN executable
 END FUNCTION
 
+FUNCTION winQuoteUrl(url STRING) RETURNS STRING
+  LET url = replace(url,"%","^%")
+  LET url = replace(url,"&","^&")
+  RETURN url
+END FUNCTION
+
 FUNCTION openBrowser(url)
   DEFINE url, cmd, browser, pre, lbrowser STRING
   IF fgl_getenv("SLAVE") IS NOT NULL THEN
@@ -3453,12 +3459,12 @@ FUNCTION openBrowser(url)
           LET pre = "start "
         END IF
       END IF
-      LET cmd = SFMT('%1%2 %3', pre, quote(browser), url)
+      LET cmd = SFMT('%1%2 %3', pre, quote(browser), winQuoteUrl(url))
     END IF
   ELSE
     CASE
       WHEN isWin()
-        LET cmd = SFMT("start %1", url)
+        LET cmd = SFMT("start %1", winQuoteUrl(url))
       WHEN isMac()
         LET cmd = SFMT("open '%1'", url)
       OTHERWISE --assume kinda linux
@@ -3857,6 +3863,9 @@ END FUNCTION
 FUNCTION handleFTNotFound(vmidx INT, ftg FTGetImage)
   DEFINE x, idx INT
   DEFINE name, vmName STRING
+  IF ftg.httpIdx==-1 THEN
+    CALL myErr(SFMT("Did not find:%1 in your remote FGLGBCDIR, is FGLGBCDIR not set probably ?", ftg.name))
+  END IF
   MYASSERT(ftg.httpIdx > 0)
   LET x = ftg.httpIdx
   CALL removeImg(vmidx, ftg.*)
