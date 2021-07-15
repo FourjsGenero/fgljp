@@ -92,6 +92,8 @@ CONSTANT SID_COOKIE = "GENERO_SID"
 CONSTANT GO_OUT = TRUE
 CONSTANT CLOSED = TRUE
 
+CONSTANT LOCALHOST = "127.0.0.1" --localhost IS SLOOOW on Windows for Chrome
+
 TYPE FTGetImage RECORD
   name STRING,
   num INT,
@@ -320,7 +322,7 @@ MAIN
   CALL log(
       SFMT("listening on real port:%1,FGLSERVER:%2",
           port, fgl_getenv("FGLSERVER")))
-  LET htpre = SFMT("http://127.0.0.1:%1/", port)
+  LET htpre = SFMT("http://" || LOCALHOST || ":%1/", port)
   LET _htpre = htpre
   LET priv = htpre, "priv/"
   LET pub = htpre
@@ -449,7 +451,7 @@ FUNCTION setup_program(priv STRING, pub STRING, port INT)
   LET _pubdir = _progdir
   LET _privdir = os.Path.join(_progdir, "priv")
   CALL os.Path.mkdir(_privdir) RETURNING status
-  CALL fgl_setenv("FGLSERVER", SFMT("127.0.0.1:%1", port - 6400))
+  CALL fgl_setenv("FGLSERVER", SFMT(LOCALHOST || ":%1", port - 6400))
   CALL fgl_setenv("FGL_PRIVATE_DIR", _privdir)
   CALL fgl_setenv("FGL_PUBLIC_DIR", _pubdir)
   CALL fgl_setenv("FGL_PUBLIC_IMAGEPATH", ".")
@@ -485,7 +487,7 @@ FUNCTION writeStartFile(port INT)
   DEFINE entries TStartEntries
   DEFINE ch base.Channel
   LET entries.port = port
-  LET entries.FGLSERVER = SFMT("127.0.0.1:%1", port - 6400)
+  LET entries.FGLSERVER = SFMT(LOCALHOST || ":%1", port - 6400)
   LET entries.pid = fgl_getpid()
   DISPLAY util.JSON.stringify(entries)
   IF _opt_startfile IS NULL THEN
@@ -777,7 +779,7 @@ FUNCTION setAppCookie(x INT, path STRING)
     RETURN
   END IF
   }
-  LET surl = "http://127.0.0.1", path
+  LET surl = "http://", LOCALHOST, path
   CALL getURLQueryDict(surl) RETURNING dict, url
   LET urlpath = url.getPath()
   IF dict.contains("monitor") AND urlpath.equals("/gbc/index.html") THEN
@@ -1054,7 +1056,7 @@ FUNCTION handleUAProto(x INT, path STRING)
       END IF
       --END IF
     WHEN path.getIndexOf("/ua/sua/", 1) == 1
-      LET surl = "http://127.0.0.1", path
+      LET surl = "http://", LOCALHOST, path
       CALL getURLQueryDict(surl) RETURNING dict, url
       LET appId = dict["appId"]
       LET procId = util.Strings.urlDecode(path.subString(9, qidx - 1))
@@ -3019,7 +3021,10 @@ FUNCTION scanCacheParameters(
   DEFINE urlstr STRING
   DEFINE url URI
   LET urlstr =
-      "http://127.0.0.1/xxx", fileName.subString(lastQ, fileName.getLength())
+      "http://",
+      LOCALHOST,
+      "/xxx",
+      fileName.subString(lastQ, fileName.getLength())
   CALL getURLQueryDict(urlstr) RETURNING d, url
   LET ftg.fileSize = d["s"]
   LET ftg.mtime = d["t"]
@@ -3448,7 +3453,7 @@ FUNCTION openBrowser(url)
       CASE
         WHEN isMac() AND browser <> "./gdcm.app/Contents/MacOS/gdcm"
           IF browser == "chrome" THEN
-            LET browser="Google Chrome"
+            LET browser = "Google Chrome"
           END IF
           LET cmd = SFMT("open -a %1 '%2'", quote(browser), url)
         WHEN isWin()
