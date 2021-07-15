@@ -10,6 +10,7 @@ IMPORT FGL fgldialog
 DEFINE _arg STRING
 MAIN
   DEFINE code INT
+  DEFINE destlogo STRING
   LET _arg = arg_val(1)
   IF _arg IS NOT NULL THEN
     DISPLAY "arg1:", _arg
@@ -20,8 +21,9 @@ MAIN
     COMMAND "EXIT"
       EXIT MENU
   END MENU}
-  CALL os.Path.copy("logo.png","logo?.png") RETURNING status
-  CALL menuShowForm(1,"logo?.png")
+  LET destlogo=IIF(testutils.isWin(),"logo,.png","logo?.png")
+  MYASSERT(os.Path.copy("logo.png",destlogo)==TRUE)
+  CALL menuShowForm(1,destlogo)
   MENU _arg
     COMMAND "qa_menu_ready"
       CALL testProcessing()
@@ -89,7 +91,7 @@ END FUNCTION
 FUNCTION showForm(img STRING)
   OPEN FORM f FROM arg_val(0)
   DISPLAY FORM f
-  MYASSERT(os.Path.exists(img) AND os.Path.size(img) > 0)
+  MYASSERT_MSG(os.Path.exists(img) AND os.Path.size(img) > 0,sfmt("img:%1",img))
   DISPLAY "Entry" TO entry
   DISPLAY SFMT('{"value": "WebComponent", "src":"%1"}',
           ui.Interface.filenameToURI(img))

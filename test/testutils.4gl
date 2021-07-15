@@ -1,4 +1,5 @@
 IMPORT util
+IMPORT os
 
 PUBLIC TYPE TStartEntries RECORD
   port INT,
@@ -8,6 +9,10 @@ PUBLIC TYPE TStartEntries RECORD
 END RECORD
 
 DEFINE _pid INT
+
+FUNCTION isWin()
+  RETURN os.Path.separator()
+END FUNCTION
 
 FUNCTION checkRUN(cmd STRING)
   DEFINE code INT
