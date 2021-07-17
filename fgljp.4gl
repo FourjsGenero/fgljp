@@ -1271,10 +1271,14 @@ FUNCTION sendToClient(
   --DISPLAY "sendToClient procId:", procId, ", ", printSel(x)
   IF NOT newtask THEN --sessId is also set in the newtask case
     LET vmidx = vmidxFromProcId(procId)
-    MYASSERT(vmidx != 0)
-    IF vmCmd.getLength() > 0 THEN --clear out VmCmd
-      LET _v[vmidx].VmCmd = NULL
-      LET _s[x].isMeta = _v[vmidx].isMeta
+    IF vmidx == 0 THEN
+      LET vmclose = TRUE
+      LET vmCmd = NULL
+    ELSE
+      IF vmCmd.getLength() > 0 THEN --clear out VmCmd
+        LET _v[vmidx].VmCmd = NULL
+        LET _s[x].isMeta = _v[vmidx].isMeta
+      END IF
     END IF
   END IF
   LET children = getChildrenForVMIdx(vmidx, _s[x].sessId)
@@ -1291,10 +1295,13 @@ FUNCTION sendToClient(
   IF vmclose THEN --must be the last check in _selDict
     LET hdrs[hdrs.getLength() + 1] = "X-FourJs-Closed: true"
     LET vmidx = vmidxFromProcId(procId)
-    MYASSERT(vmidx != 0)
-    CALL setEmptyVMConnection(vmidx)
+    IF vmidx <> 0 THEN
+      CALL setEmptyVMConnection(vmidx)
+    END IF
     CALL _selDict.remove(procId)
-    --DISPLAY "  _selDict after remove:", util.JSON.stringify(_selDict.getKeys())
+    CALL log(
+        SFMT("  _selDict after remove procId %1:%2",
+            procId, util.JSON.stringify(_selDict.getKeys())))
     LET _checkGoOut = TRUE
   ELSE
     LET procId = IIF(vmidx > 0, _v[vmidx].procId, procId)
@@ -1339,8 +1346,7 @@ FUNCTION handleGBCPath(x INT, path STRING)
     WHEN path.getIndexOf("/gbc/index.html", 1) == 1
       CALL setAppCookie(x, path)
     WHEN path.getIndexOf("/gbc/gbc_fgljp.js?", 1) == 1
-            AND os.Path.exists(
-                (fname := os.Path.join(_owndir, "gbc_fgljp.js")))
+        AND os.Path.exists((fname := os.Path.join(_owndir, "gbc_fgljp.js")))
       CALL log(SFMT("handleGBCPath: process our gbc_fglp bootstrap:%1", fname))
       CALL processFile(x, fname, TRUE)
       RETURN
@@ -2117,6 +2123,18 @@ FUNCTION extractMetaVar(line STRING, varname STRING, forceFind BOOLEAN)
   RETURN value
 END FUNCTION
 
+FUNCTION patchProcId(line STRING, procId STRING)
+  DEFINE valueIdx1, valueIdx2 INT
+  DEFINE value STRING
+  CALL extractMetaVarSub(line, "procId", TRUE)
+      RETURNING value, valueIdx1, valueIdx2
+  LET line =
+      line.subString(1, valueIdx1 - 1),
+      procId,
+      line.subString(valueIdx2 + 1, line.getLength())
+  RETURN line
+END FUNCTION
+
 FUNCTION extractMetaVarSub(
     line STRING, varname STRING, forceFind BOOLEAN)
     RETURNS(STRING, INT, INT)
@@ -2156,6 +2174,7 @@ FUNCTION handleVMMetaSel(c INT, line STRING)
   DEFINE children TStringArr
   --allocate a new VM index
   LET vmidx = findFreeVMIdx()
+  --DISPLAY "new vmidx:", vmidx
   CALL setEmptyVMConnection(vmidx)
   LET _currIdx = -vmidx
   --assign matching members from _s to _v
@@ -2234,16 +2253,26 @@ END FUNCTION
 }
 
 FUNCTION decideStartOrNewTask(vmidx INT)
-  DEFINE pp STRING
+  DEFINE pp, procId STRING
+  DEFINE v_old INT
   --either start client or send newTask
+  LET procId = _v[vmidx].procId
+  IF _selDict.contains(procId) THEN
+    --happens if fglrun -d restarts a process, new socket but old procId
+    LET v_old = _selDict[procId]
+    MYASSERT(_v[v_old].procId == procId)
+    --to avoid clashing with the procIds cient side we just extend with an X
+    LET procId = procId, "X"
+    LET _v[vmidx].procId = procId
+    LET _v[vmidx].VmCmd = patchProcId(_v[vmidx].VmCmd, procId)
+  END IF
   IF (pp := _v[vmidx].procIdParent) IS NOT NULL THEN
     CALL log(
-        SFMT("decideStartOrNewTask:%1 pp idx:%2",
-            vmidx, IIF(_selDict.contains(pp), _selDict[pp], -1)))
+        SFMT("decideStartOrNewTask:%1 procId:%2 pp idx:%3",
+            vmidx, procId, IIF(_selDict.contains(pp), _selDict[pp], -1)))
     CASE
       WHEN _useSSE AND _selDict.contains(pp)
-        LET _selDict[_v[vmidx].procId] =
-            vmidx --store the selector index of the procId
+        LET _selDict[procId] = vmidx --store the selector index of the procId
         CALL handleVM(vmidx, FALSE, 0)
       WHEN NOT _useSSE AND NOT checkNewTask(vmidx) AND NOT _selDict.contains(pp)
         CALL handleStart(vmidx)
@@ -2301,7 +2330,7 @@ FUNCTION handleConnection(key SelectionKey)
   LET _currIdx = c
   LET isVM = c < 0
   LET v = IIF(isVM, -c, 0)
-  CALL log(SFMT("handleConnection:%1 %2", c, printSel(c)))
+  CALL log(SFMT("handleConnection:%1 %2 v:%3", c, printSel(c), v))
   IF isVM AND _v[v].wait THEN
     --DISPLAY "!!!!reset wait for:", v
     LET _v[v].wait = FALSE
@@ -2648,7 +2677,7 @@ FUNCTION ReadLine(isVM BOOLEAN, v INT, c INT)
 END FUNCTION
 
 FUNCTION handleEmptyLine(isVM BOOLEAN, v INT, c INT)
-  --DISPLAY "line '' isVM:", isVM, ",isHTTP:", _s[c].isHTTP
+  --DISPLAY "line '' isVM:", isVM, ",v:", v, ",c:", c
   IF isVM THEN
     CALL handleVMFinish(v)
     RETURN GO_OUT, FALSE
