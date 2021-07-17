@@ -62,8 +62,10 @@ CONSTANT _keepalive =
     FALSE --if set to TRUE http socket connections are kept alive
 --currently: FALSE: TODO Safari blocks after fgl_putfile
 DEFINE _useSSE BOOLEAN --usage of Server Side Events:
+DEFINE _useJSWrapper BOOLEAN --whether we use the 'native' embed mode in GBC
 --set after the first GBC is loaded
 --note: mixing GBC's in remote mode gives undefined behavior for now
+DEFINE _localhost STRING --is either 'localhost' or '127.0.0.1'
 
 PUBLIC TYPE TStartEntries RECORD
   port INT,
@@ -91,8 +93,6 @@ CONSTANT SID_COOKIE = "GENERO_SID"
 
 CONSTANT GO_OUT = TRUE
 CONSTANT CLOSED = TRUE
-
-CONSTANT LOCALHOST = "127.0.0.1" --localhost IS SLOOOW on Windows for Chrome
 
 TYPE FTGetImage RECORD
   name STRING,
@@ -246,6 +246,7 @@ CONSTANT size_i = 4 --sizeof(int)
 DEFINE _isMac BOOLEAN
 DEFINE _askedOnMac BOOLEAN
 DEFINE _gbcdir STRING
+DEFINE _gbcver FLOAT
 DEFINE _owndir STRING
 DEFINE _privdir STRING
 DEFINE _pubdir STRING
@@ -279,6 +280,9 @@ MAIN
   DEFINE saddr InetSocketAddress
   LET _starttime = CURRENT
   CALL parseArgs()
+  --'localhost' is sloow with Chrome/Edge on Windows
+  --probably due to IPv6 probing
+  LET _localhost = IIF(isWin(), "127.0.0.1", "localhost")
   LET _sidCookie = genSID()
   IF _opt_clearcache THEN
     CALL clearCache()
@@ -322,7 +326,7 @@ MAIN
   CALL log(
       SFMT("listening on real port:%1,FGLSERVER:%2",
           port, fgl_getenv("FGLSERVER")))
-  LET htpre = SFMT("http://" || LOCALHOST || ":%1/", port)
+  LET htpre = SFMT("http://" || _localhost || ":%1/", port)
   LET _htpre = htpre
   LET priv = htpre, "priv/"
   LET pub = htpre
@@ -451,13 +455,13 @@ FUNCTION setup_program(priv STRING, pub STRING, port INT)
   LET _pubdir = _progdir
   LET _privdir = os.Path.join(_progdir, "priv")
   CALL os.Path.mkdir(_privdir) RETURNING status
-  CALL fgl_setenv("FGLSERVER", SFMT(LOCALHOST || ":%1", port - 6400))
+  CALL fgl_setenv("FGLSERVER", SFMT(_localhost || ":%1", port - 6400))
   CALL fgl_setenv("FGL_PRIVATE_DIR", _privdir)
   CALL fgl_setenv("FGL_PUBLIC_DIR", _pubdir)
   CALL fgl_setenv("FGL_PUBLIC_IMAGEPATH", ".")
   CALL fgl_setenv("FGL_PRIVATE_URL_PREFIX", priv)
   CALL fgl_setenv("FGL_PUBLIC_URL_PREFIX", pub)
-  CALL fgl_setenv("FGLGUIDEBUG", "1")
+  --CALL fgl_setenv("FGLGUIDEBUG", "1")
   --CALL fgl_setenv("FGLGUIDEBUG", "1")
   --should work on both Win and Unix
   --LET s= "cd ",_progdir,"&&fglrun ",os.Path.baseName(prog)
@@ -487,7 +491,7 @@ FUNCTION writeStartFile(port INT)
   DEFINE entries TStartEntries
   DEFINE ch base.Channel
   LET entries.port = port
-  LET entries.FGLSERVER = SFMT(LOCALHOST || ":%1", port - 6400)
+  LET entries.FGLSERVER = SFMT(_localhost || ":%1", port - 6400)
   LET entries.pid = fgl_getpid()
   DISPLAY util.JSON.stringify(entries)
   IF _opt_startfile IS NULL THEN
@@ -779,7 +783,7 @@ FUNCTION setAppCookie(x INT, path STRING)
     RETURN
   END IF
   }
-  LET surl = "http://", LOCALHOST, path
+  LET surl = "http://", _localhost, path
   CALL getURLQueryDict(surl) RETURNING dict, url
   LET urlpath = url.getPath()
   IF dict.contains("monitor") AND urlpath.equals("/gbc/index.html") THEN
@@ -1056,7 +1060,7 @@ FUNCTION handleUAProto(x INT, path STRING)
       END IF
       --END IF
     WHEN path.getIndexOf("/ua/sua/", 1) == 1
-      LET surl = "http://", LOCALHOST, path
+      LET surl = "http://", _localhost, path
       CALL getURLQueryDict(surl) RETURNING dict, url
       LET appId = dict["appId"]
       LET procId = util.Strings.urlDecode(path.subString(9, qidx - 1))
@@ -1334,9 +1338,10 @@ FUNCTION handleGBCPath(x INT, path STRING)
   CASE
     WHEN path.getIndexOf("/gbc/index.html", 1) == 1
       CALL setAppCookie(x, path)
-    WHEN path.getIndexOf("/gbc/js/gbc.bootstrap.js?", 1) == 1
-        AND os.Path.exists((fname := os.Path.join(_owndir, "gbc.bootstrap.js")))
-      CALL log(SFMT("handleGBCPath: process our own bootstrap:%1", fname))
+    WHEN path.getIndexOf("/gbc/gbc_fgljp.js?", 1) == 1
+            AND os.Path.exists(
+                (fname := os.Path.join(_owndir, "gbc_fgljp.js")))
+      CALL log(SFMT("handleGBCPath: process our gbc_fglp bootstrap:%1", fname))
       CALL processFile(x, fname, TRUE)
       RETURN
   END CASE
@@ -1484,7 +1489,6 @@ FUNCTION gbcResourceName(fname STRING)
     OTHERWISE
       LET fname = os.Path.join(_gbcdir, fname)
   END CASE
-  DISPLAY "gbcResourceName:", fname
   RETURN fname
 END FUNCTION
 
@@ -1579,6 +1583,9 @@ FUNCTION processFile(x INT, fname STRING, cache BOOLEAN)
     CALL writeResponseInt2(x, "", "", hdrs, "200 OK")
     RETURN
   END IF
+  IF process_index_html(x, fname) THEN
+    RETURN
+  END IF
   IF cache THEN
     LET etag = SFMT("%1.%2", os.Path.mtime(fname), os.Path.size(fname))
     IF _s[x].clitag IS NOT NULL AND _s[x].clitag == etag THEN
@@ -1626,6 +1633,92 @@ FUNCTION processFile(x INT, fname STRING, cache BOOLEAN)
       --DISPLAY "processFile:", fname, " ct:", ct
       CALL writeResponseFileHdrs(x, fname, ct, hdrs)
   END CASE
+END FUNCTION
+
+FUNCTION formatUrl(fn STRING, d TStringDict)
+  DEFINE i INT
+  DEFINE keys DYNAMIC ARRAY OF STRING
+  DEFINE o, key STRING
+  LET o = fn
+  LET keys = d.getKeys()
+  FOR i = 1 TO keys.getLength()
+    LET o = o, IIF(i == 1, "?", "&")
+    LET key = keys[i]
+    LET o = o, key, "=", d[key]
+  END FOR
+  RETURN o
+END FUNCTION
+
+FUNCTION findScriptOrLink(l STRING)
+  DEFINE i1, i2, i3, i4, i5 INT
+  DEFINE fn, fnp STRING
+  DEFINE d TStringDict
+  DEFINE url URI
+  IF ((i1 := l.getIndexOf("<script", 1)) > 0
+          OR (i1 := l.getIndexOf("<link", 1)))
+      AND ((i2 := l.getIndexOf("src", i1)) > 0
+          OR (i2 := l.getIndexOf("href", i1)) > 0)
+      AND (i3 := l.getIndexOf("=", i2)) > 0
+      AND (i4 := l.getIndexOf('"', i3)) > 0
+      AND (i5 := l.getIndexOf('"', i4 + 1)) > 0 THEN
+    LET fn = l.subString(i4 + 1, i5 - 1)
+    --DISPLAY "fn:'", fn, "'"
+    CALL getURLQueryDict(fn) RETURNING d, url
+    LET fnp = url.getPath();
+  END IF
+  RETURN l, fnp
+END FUNCTION
+
+FUNCTION inject_gbc_fgljp(b base.StringBuffer)
+  DEFINE d TStringDict
+  DEFINE gbc_fgljp STRING
+  LET gbc_fgljp = os.Path.join(_owndir, "gbc_fgljp.js")
+  MYASSERT(os.Path.exists(gbc_fgljp))
+  LET d["s"] = os.Path.size(gbc_fgljp)
+  LET d["t"] = getLastModified(gbc_fgljp)
+  CALL b.append(
+      SFMT('<script src="%1"></script>\n', formatUrl("gbc_fgljp.js", d)))
+END FUNCTION
+
+--injects our js wrapper into the gbc index.html page
+--and returns the modified page as html string
+FUNCTION patch_index_html(fname STRING) RETURNS STRING
+  DEFINE ch base.Channel
+  DEFINE line, dir, fn STRING
+  DEFINE b base.StringBuffer
+  LET b = base.StringBuffer.create()
+  LET dir = os.Path.dirName(fname)
+  LET ch = base.Channel.create()
+  CALL ch.openFile(fname, "r")
+  WHILE (line := ch.readLine()) IS NOT NULL
+    CALL findScriptOrLink(line) RETURNING line, fn
+    CALL b.append(line)
+    CALL b.append("\n")
+    IF fn == "js/gbc.js" THEN --after gbc.js appeared we inject
+      --our js helper to implement a custom GAS protocol for GBC>=4.00
+      CALL inject_gbc_fgljp(b)
+    END IF
+  END WHILE
+  CALL ch.close()
+  RETURN b.toString()
+END FUNCTION
+
+FUNCTION process_index_html(x INT, fname STRING)
+  DEFINE hdrs TStringArr
+  DEFINE ct, txt STRING
+  IF os.Path.baseName(fname) == "index.html"
+          AND (_opt_program IS NOT NULL
+              AND fname == gbcResourceName("index.html"))
+      OR (_opt_program IS NULL
+          AND fname = cacheFileName("gbc://index.html")) THEN
+    LET hdrs = getCacheHeaders(FALSE, "") --never cache for now
+    LET txt = patch_index_html(fname)
+    LET ct = "text/html"
+    CALL writeResponseCtHdrs(x, txt, ct, hdrs)
+    RETURN TRUE
+  ELSE
+    RETURN FALSE
+  END IF
 END FUNCTION
 
 FUNCTION cut_question(fname)
@@ -1830,7 +1923,7 @@ FUNCTION handleCDAttachment(x INT)
     LET _v[vmidx].cliputfile = path
     LET _s[x].cdattachment = FALSE
     LET hdrs = getCacheHeaders(FALSE, "")
-    --DISPLAY ">>>>>send 204 No Content:", printSel(x)
+    CALL log(SFMT("handleCDAttachment:send 204 No Content:%1", printSel(x)))
     CALL writeResponseInt2(x, "", "", hdrs, "204 No Content")
   ELSE
     LET _v[vmidx].cliputfile = NULL
@@ -1891,7 +1984,9 @@ FUNCTION handleVMResultForPutfile(x INT, vmidx INT, path STRING)
     END IF
   END FOR
   IF NOT found THEN
-    DISPLAY "did not find waiting http connection for :", printSel(x)
+    CALL log(
+        SFMT("handleVMResultForPutfile:did not find waiting http connection for:%1",
+            printSel(x)))
     IF _v[vmidx].FTFC THEN
       LET _v[vmidx].cliputfile = NULL
     END IF
@@ -2290,12 +2385,14 @@ END FUNCTION
 FUNCTION handleGBCVersion(vmidx INT, gbcVerFile STRING)
   DEFINE t TEXT
   DEFINE vstr STRING
-  DEFINE ver FLOAT
   LOCATE t IN FILE gbcVerFile
   LET vstr = t
-  LET ver = parseVersion(vstr)
-  CALL log(SFMT("handleGBCVersion:%1,float:%2", vstr, ver))
-  LET _useSSE = ver >= 4.0
+  LET _gbcver = parseVersion(vstr)
+  CALL log(SFMT("handleGBCVersion:%1,float:%2", vstr, _gbcver))
+  LET _useJSWrapper = _gbcver >= 4.0
+  IF _useJSWrapper THEN
+    LET _useSSE = _gbcver >= 4.0
+  END IF
   CALL handleStart2(vmidx)
 END FUNCTION
 
@@ -2306,6 +2403,14 @@ FUNCTION handleStart2(vmidx INT)
   LET no_browser = _opt_runonserver OR _opt_gdc
   IF NOT no_browser THEN
     LET startPath = SFMT("gbc/index.html?app=%1&useSSE=%2", procId, _useSSE)
+    IF _useJSWrapper THEN
+      LET startPath = startPath, "&UR_PLATFORM_TYPE=native"
+      LET startPath = startPath, "&UR_PLATFORM_NAME=GDC"
+      LET startPath = startPath, "&UR_PROTOCOL_TYPE=direct"
+      IF _gbcver >= 4.0 THEN
+        LET startPath = startPath, "&UR_PROTOCOL_VERSION=2"
+      END IF
+    END IF
     IF _firstPath IS NULL THEN
       LET _firstPath = "/", startPath
     END IF
@@ -3022,7 +3127,7 @@ FUNCTION scanCacheParameters(
   DEFINE url URI
   LET urlstr =
       "http://",
-      LOCALHOST,
+      _localhost,
       "/xxx",
       fileName.subString(lastQ, fileName.getLength())
   CALL getURLQueryDict(urlstr) RETURNING d, url
