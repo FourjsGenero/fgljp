@@ -14,6 +14,16 @@ demo: fgljp.42m demo.42m demo.42f
 #	./fgljp -v demo.42m a b
 	./fgljp demo.42m a b
 
+test/wait_for_fgljp_start.42m:
+	make -C test
+
+#starts the demo in file transfer mode in one rush
+demoft: fgljp.42m demo.42m demo.42f test/wait_for_fgljp_start.42m
+	rm -f demoft.txt
+	./fgljp --startfile demoft.txt -X &
+	cd test&&fglrun wait_for_fgljp_start ../demoft.txt&&cd ..
+	fglrun demo.42m a b
+
 rundemo: demo.42m demo.42f
 	fglrun demo.42m a b
 

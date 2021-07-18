@@ -8,7 +8,13 @@
 	fglform -M $<
 
 
-all: test.42m test.42f testutils.42m runtests.42m
+all: testutils.42m test.42m test.42f runtests.42m wait_for_fgljp_start.42m
+
+wait_for_fgljp_start.42m: testutils.42m
+
+test.42m: testutils.42m
+
+runtests.42m: test.42m
 
 test: all
 	-killall fglrun
