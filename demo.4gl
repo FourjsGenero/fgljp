@@ -11,6 +11,8 @@ MAIN
   END IF
   MENU arg
     COMMAND "Long Sleep"
+      MESSAGE "Going to sleep for 5 seconds"
+      CALL ui.Interface.refresh()
       SLEEP 5
       MESSAGE "Sleep done"
     COMMAND "Processing"
