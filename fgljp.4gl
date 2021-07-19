@@ -1556,6 +1556,9 @@ FUNCTION vmidxFromAppCookie(x INT, fname STRING)
       SFMT("vmidxFromAppCookie %1,procId:%2,vmidx:%3",
           printSel(x), procId, vmidx))
   --need to lookup the current RUN child
+  IF _useSSE THEN
+    RETURN vmidx
+  END IF
   LET cidx = getRUNChildIdx(vmidx)
   IF cidx <> vmidx THEN
     CALL log(SFMT("  RUNchild %1", printV(cidx)))
@@ -2210,7 +2213,7 @@ FUNCTION handleVMMetaSel(c INT, line STRING)
   IF procIdWaiting IS NOT NULL THEN
     LET procIdWaiting = extractProcId(procIdWaiting)
     LET _v[vmidx].procIdWaiting = procIdWaiting
-    IF _selDict.contains(procIdWaiting) THEN
+    IF NOT _useSSE AND _selDict.contains(procIdWaiting) THEN
       LET waitIdx = _selDict[procIdWaiting];
       LET _v[waitIdx].RUNchildIdx = vmidx;
     END IF
@@ -2231,7 +2234,9 @@ FUNCTION handleVMMetaSel(c INT, line STRING)
       IF procIdWaiting == pp THEN
         LET children = _v[ppidx].RUNchildren --procIdWaiting forces a RUN child
       END IF
-      LET children[children.getLength() + 1] = _v[vmidx].procId
+      IF NOT _useSSE THEN
+        LET children[children.getLength() + 1] = _v[vmidx].procId
+      END IF
       --DISPLAY "!!!!set children of:",
       --    printSel(ppidx),
       --    " to:",
