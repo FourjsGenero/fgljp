@@ -30,7 +30,7 @@ GBC shows the Genero program caused by a local or remote invocation of fglrun.
 $ ./fgljp &
 {"port":6400,"FGLSERVER":"localhost:0","pid":18092}
 [1] 18120
-$ fglcomp demo && fglformdemo && fglrun demo
+$ fglcomp demo && fglform demo && fglrun demo
 ```
 
 This is the remote mode. There is also no GAS needed to let the remote mode work.
