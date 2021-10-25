@@ -1,12 +1,13 @@
+IMPORT FGL fgldialog
 MAIN
-  DEFINE arg STRING
+  DEFINE arg,win STRING
   DEFINE num INT
   LET arg = arg_val(1)
   IF arg IS NOT NULL THEN
     DISPLAY "arg1:", arg, ",arg2:", arg_val(2)
     --MESSAGE "arg1:", arg, ",arg2:", arg_val(2)
     IF arg == "fc" THEN
-      CALL fc()
+      CALL fc10()
     END IF
   END IF
   MENU arg
@@ -17,21 +18,24 @@ MAIN
       MESSAGE "Sleep done"
     COMMAND "Processing"
       CALL testProcessing()
+    COMMAND "sub"
+      CALL sub()
     ON ACTION message ATTRIBUTE(IMAGE = "smiley", TEXT = "Message")
       LET num = num + 1
       MESSAGE SFMT("TEST%1", num)
       --ON IDLE 10
       --  MESSAGE "IDLE"
-    COMMAND "fc"
-      CALL fc()
+    COMMAND "10 frontcalls" 
+      CALL fc10()
+    COMMAND "debugger frontcall"
+      CALL ui.Interface.frontCall("debugger","getcurrentwindow",[],[win])
+      MESSAGE "activeWindow:",win
+    COMMAND "Client Info"
+      CALL fgl_winMessage("Client Info",sfmt("getFrontEndName:%1,getFrontEndVersion:%2,feinfo fename:%3",ui.Interface.getFrontEndName(), ui.Interface.getFrontEndVersion(),feinfo_fename()),"info")
     COMMAND "Show Form"
       CALL showForm("logo.png")
     COMMAND "RUN"
       RUN SFMT("fglrun demo %1 %2", arg || "+", arg_val(2))
-      {
-      COMMAND "RUN xx"
-        RUN "fglrun xx"
-      }
     COMMAND "RUN WITHOUT WAITING"
       RUN SFMT("fglrun demo %1 %2", arg || "+", arg_val(2)) WITHOUT WAITING
     COMMAND "putfile"
@@ -42,10 +46,13 @@ MAIN
            EXIT MENU
       END MENU
       }
-      CALL fgl_putfile("logo.png", "logo2.png")
-      DISPLAY "putfile done"
-      --CLOSE WINDOW w
-      MESSAGE "putfile successful"
+      TRY
+        CALL fgl_putfile("logo.png", "logo2.png")
+        DISPLAY "fgl_putfile successful"
+        MESSAGE "fgl_putfile successful"
+      CATCH
+        ERROR "fgl_putfile failed:",err_get(status)
+      END TRY
     COMMAND "getfile"
       TRY
         CALL fgl_getfile("logo2.png", "logo3.png")
@@ -62,6 +69,13 @@ MAIN
       EXIT MENU
   END MENU
 END MAIN
+
+FUNCTION sub()
+  MENU
+    COMMAND "exit"
+      EXIT MENU
+  END MENU
+END FUNCTION
 
 FUNCTION testProcessing()
   DEFINE i INT
@@ -84,15 +98,22 @@ FUNCTION showForm(img STRING)
   DISPLAY img TO logo
 END FUNCTION
 
-FUNCTION fc()
+FUNCTION feinfo_fename()
+  DEFINE fename STRING
+  CALL ui.Interface.frontCall("standard", "feinfo", ["fename"], [fename])
+  RETURN fename
+END FUNCTION
+
+FUNCTION fc10()
   DEFINE starttime DATETIME HOUR TO FRACTION(3)
   DEFINE diff INTERVAL MINUTE TO FRACTION(3)
+  DEFINE fename STRING
   DEFINE i INT
   --CONSTANT MAXCNT = 1000
   CONSTANT MAXCNT = 10
   LET starttime = CURRENT
   FOR i = 1 TO MAXCNT
-    CALL ui.Interface.frontCall("standard", "feinfo", ["fename"], [])
+    LET fename=feinfo_fename()
   END FOR
   LET diff = CURRENT - starttime
   --CALL fgl_winMessage("Info",SFMT("time:%1,time for one frontcall:%2",diff,diff/MAXCNT),"info")

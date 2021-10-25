@@ -2,6 +2,7 @@
 //its added after gbc.js in index.html by fgljp
 'use strict';
 window.fgljp = new Object;
+window.fgljp.navman=null;
 console.log("gbc_fgljp begin");
 (function() {
   var _xmlAsyncFlag=true;
@@ -18,13 +19,19 @@ console.log("gbc_fgljp begin");
   var mylog=function(s){};
   var tryJSONs=function(data){};
   var _debug=true;
+  var _fcd_timer=null;
+  var _sse_timer=null;
+  var _empty_trials=0; //number of attempts to get SSE events if we have no procIds
+  var _isGBC4 = true;
+  var _procIds = new Map;
+  var _lastMeta = null;
   if (_debug) {
     urlog=function(s) {
-      console.log("[UR] "+s);
+      //console.log("[UR] "+s);
       //alert(s.replace(/"/g, "'"));
     }
     mylog=function(s) {
-      console.log(s);
+      //console.log(s);
     }
     tryJSONs=function( data ) {
       if (typeof data == "object" ) {
@@ -52,13 +59,53 @@ console.log("gbc_fgljp begin");
       console.trace();
     }
   }
-  function getSession() {
-    var ss=window.gbc.SessionService;
+  function getCurrentSession() {
+    const ss=window.gbc.SessionService;
     return ss.getCurrent();
   }
-  function getApp() {
-    var sess=getSession();
+  function getCurrentApp() {
+    const sess=getCurrentSession();
     return sess.getCurrentApplication();
+  }
+  function getNode(id, app) {
+    const theApp=Boolean(app)?app:getCurrentApp();
+    return theApp.model.getNode(id);
+  }
+  function getProcId(app) {
+    const node0=getNode(0,app);
+    return node0.attribute("procId");
+  }
+  function isProcessing(app) {
+    const node0=getNode(0,app);
+    return node0.attribute("runtimeStatus")=="processing";
+  }
+  function isInteractive(app) {
+    const node0=getNode(0,app);
+    return node0.attribute("runtimeStatus")=="interactive";
+  }
+  function getAppName(app) {
+    const node0=getNode(0,app);
+    return node0.attribute("name");
+  }
+  function raiseProcId(procId) {
+    var sess=getCurrentSession();
+    var nav=sess.getNavigationManager();
+    try {
+      nav.__raiseProcId(procId);
+    } catch(err) {
+      alert("raiseProcId: "+err.message);
+    }
+  }
+  function appFromProcId(procId) {
+    var sess=getCurrentSession();
+    var nav=sess.getNavigationManager();
+    var app=null;
+    try {
+      app=nav.__appFromProcId(procId);
+    } catch(err) {
+      alert("appFromProcId: "+err.message);
+    }
+    return app;
   }
   function procIdShort(procId) {
     var idx=procId.indexOf(":");
@@ -176,6 +223,66 @@ console.log("gbc_fgljp begin");
     sendAjax(events.trim()+"\n","POST");
     _procId=null;
   }
+
+  function addFrontCalls() {
+    if (!_isGBC4) {
+      return; //no debugger frontcalls for now
+    }
+    window.gbc.FrontCallService.modules.debugger = {
+      setactivewindow: function(procId) {
+        var prev=getProcId();
+        var prevAppName=getAppName();
+        const anchorNode = this.getAnchorNode();
+        const thisApp = anchorNode.getApplication();
+        const thisProcId = getProcId(thisApp);
+        console.log("setactivewindow:"+procId+",prev:"+prev+",prev appname:"+prevAppName);
+        if (procId=="current") {
+          procId = thisProcId;
+          console.log("  set procId to:"+thisProcId);
+        }
+        if (procId == prev) {
+          console.log(" 1no switch needed");
+          clearTimeout(_fcd_timer);
+          _fcd_timer=null;
+        } else {
+          if (_fcd_timer) {
+            console.log("  _fcd_timer already set:"+_fcd_timer);
+          }
+          _fcd_timer=setTimeout(function() {
+            const curr=getProcId();
+            console.log("setactivewindow timer: curr:"+curr+",procId:"+procId);
+            if (curr!=procId) {    
+              if (curr==thisProcId && thisProcId!=procId && 
+                isInteractive(thisApp)) {
+                console.log("keep debugger on top");
+              } else {
+                console.log("raiseProcId:"+procId);
+                raiseProcId(procId);
+              }
+            } else {
+              console.log(" 2no switch needed");
+            }
+          }, 300);
+        }
+        return [prev];
+      },
+      getactivewindow: function() {
+        //should return the name/procId of the current(topmost) app
+        const procId = getProcId();
+        console.log("getactivewindow:"+procId+",app:"+getAppName());
+        return [procId];
+      },
+      getcurrentwindow: function() {
+         //should return the procId of the debugger context
+         const anchorNode = this.getAnchorNode();
+         const thisApp = anchorNode.getApplication()
+         const procId = getProcId(thisApp);
+         const appName = getAppName(thisApp);
+         console.log("getcurrentwindow gets procId:"+procId+",name:"+appName);
+         return [procId];
+      }
+    };
+  }
   function myMeta(meta) {
     mylog("myMeta:"+meta);
     var obj={nativeResourcePrefix: "___",
@@ -183,19 +290,26 @@ console.log("gbc_fgljp begin");
              forcedURfrontcalls:{},
              debugMode:1,
              logLevel:2};
+    _lastMeta = meta;
     emitReady(obj);
+    addGBCPatches(window.gbc);
   }
   function emitReady(metaobj) {
     //called by GBC
     window.gbcWrapper.URReady = function(o) {
       console.log("URREADY:"+JSON.stringify(o));
-      var sess=getSession();
+      var sess=getCurrentSession();
       sess.addServerFeatures(["ft-lock-file"]);
       var UCName=(_proto==2)? o.content.UCName : o.UCName;
       var UCVersion =(_proto==2)? o.content.UCVersion : o.UCVersion;
       var meta='meta Client{{name "GDC"} {UCName "'+UCName+'"} {version "'+UCVersion+'"} {host "browser"} {encapsulation "0"} {filetransfer "0"}}\n';
       myassert(_sessId!=null);
-      console.log("meta:",meta);
+      mylog("meta:",meta);
+      _procIds.set(o.procId,_lastMeta);
+      mylog("  _procIds:"+[..._procIds.keys()]);
+      
+      
+      _lastMeta = null;
       sendPOST(meta,o.procId);
     }
 
@@ -205,6 +319,22 @@ console.log("gbc_fgljp begin");
     }
     window.gbcWrapper.close = function(data) {
       urlog("gbcWrapper.close:"+tryJSONs(data));
+      if (typeof data=="object" && data.procId ) {
+        urlog(" delete:"+data.procId+" from:" +[..._procIds.keys()]);
+        _procIds.delete(data.procId)
+        /*
+        if (_procIds.size==0 && _source!==null ) {
+          //we try to avoid requesting forever
+          setTimeout(function() {
+            //look again
+            if (_procIds.size==0 && _source!==null ) {
+              urlog("  stop SSE after last close");
+              _source.close()
+              _source=null;
+            }
+          }, 500);
+        }*/
+      }
     }
     window.gbcWrapper.interrupt = function(data) {
       urlog("gbcWrapper.interrupt:"+tryJSONs(data));
@@ -279,28 +409,35 @@ console.log("gbc_fgljp begin");
     var d = (_proto == 2) ? { content : data, procId: procId } : data;
     window.gbcWrapper.emit("receive", d);
   }
+  function emit_rn0(procId) {
+    try {
+      emitReceive("om 10000 {{rn 0}}\n",procId);
+    } catch (err) {
+      mylog("error {{rn 0}}: "+err.message+",stack: "+err.stack);
+    }
+  }
   //SSE events
   function addEventSource(url) {
     myassert(_source===null);
     var source = new EventSource(url);
     source.addEventListener('open', function(e) {
-      console.log("EventSource openened-->");
+      mylog("EventSource openened-->");
     });
     source.addEventListener('vmclose', function(e) {
       var procId = e.lastEventId;
-      console.log("SSE vmclose:'"+typeof e.data+","+e.data+"',id:"+procId);
+      mylog("SSE vmclose:'"+typeof e.data+","+e.data+"',id:"+procId);
+      if (_procIds.has(procId)) {
+        //ugly hack to force GBC being closed
+        emit_rn0(procId);
+      }
       if (e.data == "http404" ) {
-        source.close();
-        _source = null;
+        mylog("session ended, finally close source");
+        closeSource();
       } else {
-        reAddSource(url);
+        reAddSource(url,true);
       }
-      try {
-        emitReceive("om 10000 {{rn 0}}\n",procId);
-      } catch (err) {
-        mylog("error: "+err.message+",stack: "+err.stack);
-      }
-      /* //tried various gdc native stuff without success to close the app
+      /* 
+      //tried various gdc native stuff without success to close the app 'natively'
       window.gbcWrapper.emit("destroyEvent", { content: { message : "destroyed" }, procId: procId} );
       try {
         window.gbcWrapper.emit("nativeAction", { name: "close" });
@@ -315,16 +452,21 @@ console.log("gbc_fgljp begin");
       */
     });
     source.addEventListener('meta', function(e) {
-      console.log("SSE meta:'"+typeof e.data+","+e.data+"',id:"+e.lastEventId);
+      const procId=e.lastEventId;
+      mylog("SSE meta:'"+typeof e.data+","+e.data+"',id:"+procId);
       var data=String(e.data);
-      reAddSource(url);
+      if (_procIds.has(procId)) {
+        alert("  same procId coming in"+procId+",close old one");
+        emit_rn0(procId);
+      }
+      reAddSource(url,false);
       myMeta(data.trim());
     });
     source.addEventListener('message', function(e) {
       var procId = e.lastEventId;
-      console.log("SSE msg data:'"+e.data+"',id:"+procId);
+      mylog("SSE msg data:'"+e.data+"',id:"+procId);
       var data=String(e.data);
-      reAddSource(url);
+      reAddSource(url,true);
       if (data && data.length>0 ) {
         if (data.charAt(0)=="[") { //multiple lines...happens in VM http mode without encaps when processing
           var arr=JSON.parse(data);
@@ -338,19 +480,43 @@ console.log("gbc_fgljp begin");
     });
 
     source.addEventListener('error', function(e) {
-       mylog("err readyState:"+e.readyState);
-       if (e.readyState == EventSource.CLOSED) {
+       mylog("err readyState:"+e.target.readyState);
+       if (e.target.readyState == EventSource.CLOSED) {
          console.log("EventSource closed");
        }
+       mylog(" close SSE due to an error(server not reachable)");
+       closeSource();
     });
     _source=source;
     mylog("added eventsource at url:"+url);
   }
-  function reAddSource(url) { //needed for firefox: ignores the retry param
-    //which means each SSE event causes the SSE listeners to be added again
+  function closeSource() {
     _source.close()
     _source=null;
-    addEventSource(url);
+  }
+  function reAddSource(url,checkProcIds) { //needed for firefox: ignores the retry param
+    //which means each SSE event causes the SSE listeners to be added again
+    mylog("reAddSource: checkProcIds:"+checkProcIds+",size:"+ _procIds.size+",_sse_timer:"+_sse_timer);
+    closeSource();
+    clearTimeout(_sse_timer);
+    _sse_timer=null;
+    if (false && checkProcIds && _procIds.size==0) {
+        _sse_timer=setTimeout(function() {
+          if (_empty_trials<10) {
+            _empty_trials++;
+            mylog("reAddSource : empty trials:"+_empty_trials);
+          } else {
+            mylog("reAddSource: finally close eventSource");
+            return;
+          }
+          addEventSource(url);
+        }, 1000);
+        mylog("did set up _sse_timer:"+_sse_timer);
+    } else { //reset the counter
+      mylog("clear sse_timer")
+      _empty_trials=0;
+      addEventSource(url);
+    }
   }
   function addGBCPatchesInt(gbc) {
     var gbcP=Object.getPrototypeOf(gbc);
@@ -362,36 +528,98 @@ console.log("gbc_fgljp begin");
       if (!path || /^(http[s]?|[s]?ftp|data|file|font)/i.test(path)) {
         return path;
       }
-      console.log("wrapResourcePath path:"+path+",nativePrefix:"+nativePrefix+",browserPrefix:"+browserPrefix);
+      //console.log("wrapResourcePath path:"+path+",nativePrefix:"+nativePrefix+",browserPrefix:"+browserPrefix);
       //var startPath = (browserPrefix ? browserPrefix + "/" : "");
       if (nativePrefix == "webcomponents" ) {
         nativePrefix = "webcomponents/webcomponents";
       }
       var startPath = (nativePrefix ? nativePrefix + "/" : "");
       let returnPath = startPath + path;
-      console.log("returnPath:"+returnPath);
+      //console.log("returnPath:"+returnPath);
       return returnPath;
     }
+    if (_isGBC4) {
+    var navP = classes.VMSessionNavigationManager.prototype;
+    navP.__appFromProcId=function(procId) {
+       const appId = this._stackCurrentApplication.get(procId);
+       let app = this._applicationLookupByProcId.get(appId);
+       if (!app) {
+          const stack = this._applicationStacks.get(procId);
+          app = this._applicationLookupByProcId.get(stack[stack.length - 1])
+       }
+       return app;
+    }
+    navP.__raiseProcId=function(procId) {
+       //ripped from VMSessionNavigationManagers rootWidget.when(context.constants.widgetEvents.click, () => ...
+       //it would be preferable if that was a separately callable API
+       fgljp.navman=this;
+       const app = this.__appFromProcId(procId);
+       if (app) {
+         app.getUI().syncCurrentWindow();
+       }
+    }
+    }
+    /*
+    var hSideP = classes.ApplicationHostSidebarWidget.prototype;
+    hSideP.isAlwaysVisible=function() { //avoid the disturbing sidebar to steal place
+      mylog("isAlwaysVisible");
+      return false;
+    }
+    hSideP.updateResize = function(deltaX,absolute) {
+      mylog("updateResize:"+deltaX+",absolute:"+absolute);
+    }
+    hSideP.updateResizeTimer = function() {
+      mylog("updateResizeTimer");
+    }
+    hSideP._onTransitionEnd = function(evt) {
+      mylog("_onTransitionEnd");
+    }
+    hSideP.setDisplayed = function(displayed) {
+      mylog("setDisplayed");
+    }
+    hSideP.getCurrentSize = function() {
+      mylog("getCurrentSize");
+      return 0;
+    }
+    hSideP.getSideBarwidth=function() {
+      mylog("getSideBarwidth1");
+      return 0;
+    }
+    gbc.HostLeftSidebarService.enableSidebar(false);
+    var sss = classes.StoredSettingsService.prototype;
+    sss.getSideBarwidth=function() {
+      mylog("getSideBarwidth2");
+      return 0;
+    }
+    */
   }
   function addGBCPatches(gbc) {
     try {
       addGBCPatchesInt(gbc);
+      addFrontCalls();
     } catch (err) {
-      mylog("addGBCPatches:"+err.message);
+      alert("addGBCPatches:"+err.message);
     }
-  }
-  if (_debug) {
-    fgljp.addGBCPatches=addGBCPatches;
   }
   function startWrapper() {
     mylog("gbc_fgljp startWrapper");
-    addGBCPatches(window.gbc);
     sendAjax("",(_useSSE ? "POST":"GET"));
   }
+  if (_debug) {
+    fgljp.addGBCPatches=addGBCPatches;
+    fgljp.startWrapper=startWrapper;
+    fgljp.getCurrentSession=getCurrentSession;
+    fgljp.getCurrentApp=getCurrentApp;
+    fgljp.getNode=getNode;
+    fgljp.getProcId=getProcId;
+    fgljp.raiseProcId=raiseProcId;
+  }
+  window.gbc.ThemeService.setValue("theme-sidebar-max-width","100000px");
+  _isGBC4= parseFloat(window.gbc.version)>=4.0;
   if (_isBrowser) {
     window.__gbcDefer = function (start) {//only called in "browser" mode by GBC
       mylog("__gbcDefer called in browser mode,_useSSE:"+_useSSE+",start:"+start);
-      mylog("gbc ver:"+window.gbc.version);
+      mylog("gbc ver:"+window.gbc.version+",_isGBC4:"+_isGBC4);
       if (_useSSE) {
         alert("_useSSE active, not possible to be set in browser mode");
         return;

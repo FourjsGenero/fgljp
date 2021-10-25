@@ -61,7 +61,6 @@ IMPORT JAVA java.security.SecureRandom
 CONSTANT _keepalive =
     FALSE --if set to TRUE http socket connections are kept alive
 --currently: FALSE: TODO Safari blocks after fgl_putfile
-DEFINE _useSSE BOOLEAN --usage of Server Side Events:
 DEFINE _useJSWrapper BOOLEAN --whether we use the 'native' embed mode in GBC
 --set after the first GBC is loaded
 --note: mixing GBC's in remote mode gives undefined behavior for now
@@ -85,6 +84,7 @@ CONSTANT S_WAITCONTENT = "WaitContent"
 CONSTANT S_WAITFORFT = "WaitForFT"
 CONSTANT S_ACTIVE = "Active"
 CONSTANT S_WAITFORVM = "WaitForVM"
+CONSTANT S_HTTPHANDLER = "HttpHandler"
 CONSTANT S_FINISH = "Finish"
 CONSTANT PUTFILE_DELIVERED = "!!!!__putfile_delivered__!!!"
 
@@ -142,7 +142,6 @@ TYPE TVMRec RECORD
   active BOOLEAN,
   chan SocketChannel,
   dIn DataInputStream,
-  dOut DataOutputStream,
   key SelectionKey,
   state STRING,
   starttime DATETIME HOUR TO FRACTION(1),
@@ -155,6 +154,7 @@ TYPE TVMRec RECORD
   toVMCmd STRING, --cmd buffer if VM socket is waiting
   FTV2 BOOLEAN, --VM has filetransfer V2
   FTFC BOOLEAN, --VM has filetransfer FrontCall
+  useSSE BOOLEAN, --we communicate using the SSE protocol
   ftNum INT, --current FT num
   writeNum INT, --FT id1
   writeNum2 INT, --FT id2
@@ -338,6 +338,7 @@ MAIN
     CALL setup_program(priv, pub, port)
   END IF
   WHILE TRUE
+    CALL log(sfmt("_didAcceptOnce:%1,_checkGoOut:%2",_didAcceptOnce,_checkGoOut))
     IF _didAcceptOnce AND _checkGoOut AND canGoOut() THEN
       EXIT WHILE
     END IF
@@ -415,9 +416,17 @@ FUNCTION printSel(c INT)
   END CASE
 END FUNCTION
 
+FUNCTION selDictRemove(procId STRING)
+  CALL _selDict.remove(procId)
+  CALL log(
+        SFMT("selDictRemove after remove procId %1:%2",
+            procId, util.JSON.stringify(_selDict.getKeys())))
+  LET _checkGoOut = TRUE
+END FUNCTION
+
 FUNCTION canGoOut()
   LET _checkGoOut = FALSE
-  --DISPLAY "_selDict.getLength:",_selDict.getLength(),",keys:",util.JSON.stringify(_selDict.getKeys())
+  CALL log(sfmt("canGoOut: _selDict.getLength:%1,keys:%2",_selDict.getLength(),util.JSON.stringify(_selDict.getKeys())))
   IF _selDict.getLength() == 0 THEN
     CALL log("canGoOut: no VM channels anymore")
     IF _opt_program IS NOT NULL OR _opt_autoclose THEN
@@ -627,13 +636,17 @@ PRIVATE FUNCTION parseArgs()
   END IF
 END FUNCTION
 
-FUNCTION myErr(errstr STRING)
+FUNCTION printStderr(errstr STRING)
   DEFINE ch base.Channel
   LET ch = base.Channel.create()
   CALL ch.openFile("<stderr>", "w")
-  CALL ch.writeLine(
-      SFMT("ERROR:%1 stack:\n%2", errstr, base.Application.getStackTrace()))
+  CALL ch.writeLine(errstr)
   CALL ch.close()
+END FUNCTION
+
+FUNCTION myErr(errstr STRING)
+  CALL printStderr(
+      SFMT("ERROR:%1 stack:\n%2", errstr, base.Application.getStackTrace()))
   EXIT PROGRAM 1
 END FUNCTION
 
@@ -764,7 +777,7 @@ FUNCTION parseHttpLine(x INT, s STRING)
   IF path.getIndexOf("Disposition=attachment", 1) > 0 THEN
     --DISPLAY "!!!Disposition=attachment for:", s
     LET _s[x].cdattachment = TRUE
-    LET _s[x].keepalive = FALSE
+    LET _s[x].keepalive = TRUE
   END IF
   LET _s[x].path = path
   CALL log(SFMT("parseHttpLine:%1 %2", s, printSel(x)))
@@ -849,8 +862,12 @@ FUNCTION parseHttpHeader(x INT, s STRING)
 END FUNCTION
 
 FUNCTION finishHttp(x INT)
-  LET _s[x].state = S_FINISH
+  MYASSERT(_s[x].state == S_FINISH)
+  CALL log(SFMT("finishHttp:%1,keepalive:%2", printSel(x), _keepalive))
   CALL checkReRegister(FALSE, 0, x)
+  IF NOT _keepalive THEN
+    CALL closeSel(x)
+  END IF
 END FUNCTION
 
 FUNCTION checkHTTPForSend(x INT, procId STRING, vmclose BOOLEAN, line STRING)
@@ -936,7 +953,7 @@ FUNCTION handleVM(vmidx INT, vmclose BOOLEAN, httpIdx INT)
   LET procId = _v[vmidx].procId
   LET line = _v[vmidx].VmCmd
   IF httpIdx == 0 THEN
-    IF _useSSE THEN
+    IF _v[vmidx].useSSE THEN
       LET httpIdx = getSSEIdxFor(vmidx)
     ELSE
       LET httpIdx = _v[vmidx].httpIdx
@@ -971,29 +988,31 @@ END FUNCTION
 
 FUNCTION vmidxForSessId(sessId STRING)
   DEFINE i INT
+  --DISPLAY sfmt("vmidxForSessId:%1,_lastVM:%2",sessId,_lastVM)
   --first check if one of the VM channels has data to send
   IF _lastVM > 0
       AND _v[_lastVM].sessId == sessId
       AND _v[_lastVM].VmCmd IS NOT NULL THEN
-    --DISPLAY "vmidxForSessId: with data _lastVM:", _lastVM
+    --DISPLAY "  vmidxForSessId: with data _lastVM:", _lastVM
     RETURN _lastVM
   END IF
   FOR i = 1 TO _v.getLength()
     IF _v[i].sessId == sessId AND _v[i].VmCmd IS NOT NULL THEN
-      --DISPLAY "vmidxForSessId: with data i:", i
+      --DISPLAY "  vmidxForSessId: with data i:", i
       RETURN i
     END IF
   END FOR
   IF _lastVM > 0 AND _v[_lastVM].sessId == sessId THEN
-    --DISPLAY "vmidxForSessId: without data _lastVM:", _lastVM
+    --DISPLAY "  vmidxForSessId: without data _lastVM:", _lastVM
     RETURN _lastVM
   END IF
   FOR i = 1 TO _v.getLength()
     IF _v[i].sessId == sessId THEN
-      --DISPLAY "vmidxForSessId: without data i:", i
+      --DISPLAY "  vmidxForSessId: without data i:", i
       RETURN i
     END IF
   END FOR
+  --DISPLAY "  vmidxForSessId no Vm for session:",sessId
   RETURN 0
 END FUNCTION
 
@@ -1055,6 +1074,7 @@ FUNCTION handleUAProto(x INT, path STRING)
       --IF NOT _selDict.contains(sessId) THEN
       LET vmidx = vmidxForSessId(sessId)
       IF vmidx == 0 THEN
+        CALL selDictRemove(sessId)
         CALL sendVMCloseViaSSE(x, sessId)
         RETURN
       END IF
@@ -1115,13 +1135,13 @@ FUNCTION handleUAProto(x INT, path STRING)
     END IF
     LET vmCmd = _v[vmidx].VmCmd
     IF sessId IS NOT NULL THEN
-      --DISPLAY "set sessId for vmidx:", vmidx, " to:", sessId
+      --DISPLAY "handleUAProto: set sessId for vmidx:", vmidx, " to:", sessId
       LET _v[vmidx].sessId = sessId
       CALL _RWWchildren[sessId].clear()
     ELSE
       LET sessId = _v[vmidx].sessId
     END IF
-    IF _useSSE AND _s[x].method == "POST" THEN
+    IF _v[vmidx].useSSE AND _s[x].method == "POST" THEN
       --only if SSE is active we answer with an empty result
       CALL sendToClient(x, "", procId, FALSE, FALSE)
       RETURN
@@ -1298,11 +1318,7 @@ FUNCTION sendToClient(
     IF vmidx <> 0 THEN
       CALL setEmptyVMConnection(vmidx)
     END IF
-    CALL _selDict.remove(procId)
-    CALL log(
-        SFMT("  _selDict after remove procId %1:%2",
-            procId, util.JSON.stringify(_selDict.getKeys())))
-    LET _checkGoOut = TRUE
+    CALL selDictRemove(procId)
   ELSE
     LET procId = IIF(vmidx > 0, _v[vmidx].procId, procId)
     --in each interaction coming from the VM we set the app id cookie new
@@ -1416,6 +1432,7 @@ FUNCTION httpHandler(x INT)
   DEFINE text, path STRING
   LET path = _s[x].path
   CALL log(SFMT("%1 httpHandler '%2' %3", _s[x].method, path, printSel(x)))
+  LET _s[x].state = S_HTTPHANDLER
   MYASSERT(_sidCookie IS NOT NULL)
   {
   IF NOT _sidCookie.equals(_s[x].sidCookie)
@@ -1520,6 +1537,20 @@ FUNCTION getRUNChildIdx(vmidx INT)
 END FUNCTION
 
 FUNCTION vmidxFromAppCookie(x INT, fname STRING)
+  DEFINE vmidx INT
+  LET vmidx=vmidxFromAppCookieInt(x, fname)
+  LET vmidx=IIF(vmidx>_v.getLength(),0,vmidx)
+  IF vmidx>0 AND vmidx<=_v.getLength() THEN
+    IF _v[vmidx].state==S_FINISH THEN
+      CALL log(sfmt("vmidxFromAppCookie: caught vmidx for dead VM:%1, fname:%2",
+                  printV(vmidx),fname))
+      RETURN 0
+    END IF
+  END IF
+  RETURN vmidx
+END FUNCTION
+
+FUNCTION vmidxFromAppCookieInt(x INT, fname STRING)
   DEFINE procId STRING
   DEFINE d TStringDict
   DEFINE url URI
@@ -1556,7 +1587,7 @@ FUNCTION vmidxFromAppCookie(x INT, fname STRING)
       SFMT("vmidxFromAppCookie %1,procId:%2,vmidx:%3",
           printSel(x), procId, vmidx))
   --need to lookup the current RUN child
-  IF _useSSE THEN
+  IF _v[vmidx].useSSE THEN
     RETURN vmidx
   END IF
   LET cidx = getRUNChildIdx(vmidx)
@@ -1776,7 +1807,8 @@ FUNCTION writeHTTPBytes(x INT, bytes MyByteArray)
   TRY
     CALL _s[x].dOut.write(bytes)
   CATCH
-    CALL dlog(SFMT("ERROR:writeHTTPBytes:%1", err_get(status)))
+    --TODO:somehow close the connection here and avoid follow errors
+    CALL printStderr(SFMT("ERROR:writeHTTPBytes:%1", err_get(status)))
   END TRY
 END FUNCTION
 
@@ -1905,6 +1937,7 @@ FUNCTION writeHTTPCommon(x INT)
   CALL writeHTTPLine(x, h)
   CALL writeHTTPLine(
       x, IIF(_s[x].keepalive, "Connection: keep-alive", "Connection: close"))
+  LET _s[x].state = S_FINISH
 END FUNCTION
 
 FUNCTION writeResponseInt(x INT, content STRING, ct STRING, code STRING)
@@ -1983,11 +2016,12 @@ FUNCTION handleVMResultForPutfile(x INT, vmidx INT, path STRING)
         LET _v[vmidx].cliputfile = NULL
         MYASSERT(writeToVMWithProcId(x, body, procId) == TRUE)
       END IF
-      IF _useSSE THEN
-        CALL sendToClient(i, "", procId, FALSE, FALSE)
-      ELSE
-        LET _v[vmidx].httpIdx = i --mark the connection for VM answer
-      END IF
+      --IF _v[vmidx].useSSE THEN
+      --  CALL sendToClient(i, "", procId, FALSE, FALSE)
+      --  CALL finishHttp(i)
+      --ELSE
+      LET _v[vmidx].httpIdx = i --mark the connection for VM answer
+      --END IF
       LET found = TRUE
       EXIT FOR
     END IF
@@ -2121,7 +2155,8 @@ END FUNCTION
 FUNCTION extractMetaVar(line STRING, varname STRING, forceFind BOOLEAN)
   DEFINE valueIdx1, valueIdx2 INT
   DEFINE value STRING
-  CALL extractMetaVarSub(line, varname, forceFind)
+  CALL extractMetaVarSub(
+      line, varname, forceFind)
       RETURNING value, valueIdx1, valueIdx2
   RETURN value
 END FUNCTION
@@ -2129,7 +2164,8 @@ END FUNCTION
 FUNCTION patchProcId(line STRING, procId STRING)
   DEFINE valueIdx1, valueIdx2 INT
   DEFINE value STRING
-  CALL extractMetaVarSub(line, "procId", TRUE)
+  CALL extractMetaVarSub(
+      line, "procId", TRUE)
       RETURNING value, valueIdx1, valueIdx2
   LET line =
       line.subString(1, valueIdx1 - 1),
@@ -2213,10 +2249,6 @@ FUNCTION handleVMMetaSel(c INT, line STRING)
   IF procIdWaiting IS NOT NULL THEN
     LET procIdWaiting = extractProcId(procIdWaiting)
     LET _v[vmidx].procIdWaiting = procIdWaiting
-    IF NOT _useSSE AND _selDict.contains(procIdWaiting) THEN
-      LET waitIdx = _selDict[procIdWaiting];
-      LET _v[waitIdx].RUNchildIdx = vmidx;
-    END IF
   END IF
   LET pp = extractMetaVar(line, "procIdParent", FALSE)
   IF pp IS NOT NULL THEN
@@ -2225,16 +2257,24 @@ FUNCTION handleVMMetaSel(c INT, line STRING)
     IF _selDict.contains(pp) THEN
       LET ppidx = _selDict[pp]
       IF (sessId := _v[ppidx].sessId) IS NOT NULL THEN
+        --DISPLAY SFMT("set _v[%1].sessId=%2", vmidx, sessId)
         LET _v[vmidx].sessId = sessId
+        LET _v[vmidx].useSSE = _v[ppidx].useSSE
         IF _RWWchildren.contains(sessId) THEN
           LET children =
               _RWWchildren[sessId] --could be RUN WITHOUT WAITING child
         END IF
       END IF
+      IF procIdWaiting IS NOT NULL
+          AND NOT _v[vmidx].useSSE
+          AND _selDict.contains(procIdWaiting) THEN
+        LET waitIdx = _selDict[procIdWaiting];
+        LET _v[waitIdx].RUNchildIdx = vmidx;
+      END IF
       IF procIdWaiting == pp THEN
         LET children = _v[ppidx].RUNchildren --procIdWaiting forces a RUN child
       END IF
-      IF NOT _useSSE THEN
+      IF NOT _v[vmidx].useSSE THEN
         LET children[children.getLength() + 1] = _v[vmidx].procId
       END IF
       --DISPLAY "!!!!set children of:",
@@ -2262,24 +2302,33 @@ FUNCTION decideStartOrNewTask(vmidx INT)
   DEFINE v_old INT
   --either start client or send newTask
   LET procId = _v[vmidx].procId
+  ---MYASSERT(_selDict.contains(procId))
   IF _selDict.contains(procId) THEN
     --happens if fglrun -d restarts a process, new socket but old procId
     LET v_old = _selDict[procId]
+    --DISPLAY SFMT("same procId:%1,v_old:%2,vmidx:%3", procId, v_old, vmidx)
     MYASSERT(_v[v_old].procId == procId)
-    --to avoid clashing with the procIds cient side we just extend with an X
-    LET procId = procId, "X"
-    LET _v[vmidx].procId = procId
-    LET _v[vmidx].VmCmd = patchProcId(_v[vmidx].VmCmd, procId)
+    IF _v[vmidx].sessId IS NULL THEN
+      LET _v[vmidx].sessId = procId
+    END IF
+    IF v_old <> vmidx THEN
+      --DISPLAY "  handleVMFinish v_old"
+      CALL handleVMFinish(v_old)
+      CALL setEmptyVMConnection(v_old)
+      LET _selDict[procId] = vmidx
+    END IF
   END IF
   IF (pp := _v[vmidx].procIdParent) IS NOT NULL THEN
     CALL log(
         SFMT("decideStartOrNewTask:%1 procId:%2 pp idx:%3",
             vmidx, procId, IIF(_selDict.contains(pp), _selDict[pp], -1)))
     CASE
-      WHEN _useSSE AND _selDict.contains(pp)
+      WHEN _v[vmidx].useSSE AND _selDict.contains(pp)
         LET _selDict[procId] = vmidx --store the selector index of the procId
         CALL handleVM(vmidx, FALSE, 0)
-      WHEN NOT _useSSE AND NOT checkNewTask(vmidx) AND NOT _selDict.contains(pp)
+      WHEN NOT _v[vmidx].useSSE
+          AND NOT checkNewTask(vmidx)
+          AND NOT _selDict.contains(pp)
         CALL handleStart(vmidx)
     END CASE
   ELSE
@@ -2300,8 +2349,10 @@ END FUNCTION
 
 FUNCTION setEmptyVMConnection(v INT)
   DEFINE empty TVMRec
+  CALL log(sfmt("setEmptyVMConnection:%1",printV(v)))
   LET _v[v].* = empty.* --resets also active
   LET _lastVM = IIF(v == _lastVM, 0, _lastVM)
+  CALL log(sfmt("  _lastVM=%1",_lastVM))
 END FUNCTION
 
 FUNCTION handleConnection(key SelectionKey)
@@ -2342,8 +2393,13 @@ FUNCTION handleConnection(key SelectionKey)
   END IF
   CALL handleConnectionInt(isVM, v, c, key, chan) RETURNING isVM, v, closed
   IF isVM THEN
-    IF _v[v].didSendVMClose THEN
-      CALL setEmptyVMConnection(v)
+    IF _v[v].didSendVMClose OR _v[v].state = S_FINISH THEN
+      {
+      IF _v[v].useSSE THEN
+        --dangereous: no one can access after
+        CALL setEmptyVMConnection(v)
+      END IF
+      }
       LET _lastVM = IIF(v == _lastVM, 0, _lastVM)
     ELSE
       LET _selDict[_v[v].procId] = v --store the selector index of the procId
@@ -2356,14 +2412,14 @@ FUNCTION handleConnection(key SelectionKey)
         END IF
       END IF
       IF (NOT _v[v].wait AND (_v[v].VmCmd IS NOT NULL AND _v[v].clientMetaSent))
-          OR (NOT _v[v].chan.isBlocking()) THEN
+          OR (_v[v].chan IS NULL OR NOT _v[v].chan.isBlocking()) THEN
         CALL log(
             SFMT("!!!!VmCmdPending: do not reRegister vmidx:%1,wait:%2,VmCmd:%3,clientMetaSent:%4,isBlocking:%5",
                 v,
                 _v[v].wait,
                 limitPrintStr(_v[v].VmCmd),
                 _v[v].clientMetaSent,
-                _v[v].chan.isBlocking()))
+                IIF(_v[v].chan IS NULL, 0, _v[v].chan.isBlocking())))
       ELSE
         CALL checkReRegister(TRUE, v, c)
       END IF
@@ -2376,7 +2432,11 @@ FUNCTION handleConnection(key SelectionKey)
     END IF
   ELSE
     IF NOT closed THEN
-      CALL checkReRegister(FALSE, v, c)
+      IF _s[c].state == S_FINISH THEN
+        CALL finishHttp(c)
+      ELSE
+        CALL checkReRegister(FALSE, v, c)
+      END IF
     END IF
   END IF
   LET _currIdx = 0
@@ -2425,7 +2485,7 @@ FUNCTION handleGBCVersion(vmidx INT, gbcVerFile STRING)
   CALL log(SFMT("handleGBCVersion:%1,float:%2", vstr, _gbcver))
   LET _useJSWrapper = _gbcver >= 4.0
   IF _useJSWrapper THEN
-    LET _useSSE = _gbcver >= 4.0
+    LET _v[vmidx].useSSE = _gbcver >= 4.0
   END IF
   CALL handleStart2(vmidx)
 END FUNCTION
@@ -2436,7 +2496,8 @@ FUNCTION handleStart2(vmidx INT)
   LET procId = _v[vmidx].procId
   LET no_browser = _opt_runonserver OR _opt_gdc
   IF NOT no_browser THEN
-    LET startPath = SFMT("gbc/index.html?app=%1&useSSE=%2", procId, _useSSE)
+    LET startPath =
+        SFMT("gbc/index.html?app=%1&useSSE=%2", procId, _v[vmidx].useSSE)
     IF _useJSWrapper THEN
       LET startPath = startPath, "&UR_PLATFORM_TYPE=native"
       LET startPath = startPath, "&UR_PLATFORM_NAME=GDC"
@@ -2465,7 +2526,6 @@ FUNCTION handleStart2(vmidx INT)
     WHEN _opt_nostart --we just write the starting URL on stdout
       DISPLAY url
     OTHERWISE
-      DISPLAY "url:", url
       CALL openBrowser(url)
   END CASE
 END FUNCTION
@@ -2698,8 +2758,7 @@ FUNCTION handleEmptyLine(isVM BOOLEAN, v INT, c INT)
       RETURN GO_OUT, FALSE
     ELSE
       --DISPLAY "Finish of :", _s[c].path
-      LET _s[c].state = S_FINISH
-      CALL httpHandler(c)
+      CALL httpHandler(c) --might set state to S_WAITFORVM or to S_FINISH
       RETURN GO_OUT, FALSE
     END IF
   END IF
@@ -2766,6 +2825,7 @@ FUNCTION merge2BA(
   LET baRead = MAXB + baRead
   LET startidx = baRead - blen - 2
   --DISPLAY SFMT("merge2BA to baRead:%1,startidx:%2", baRead, startidx)
+  CALL bout.close()
   RETURN ba, nul, baRead, startidx
 END FUNCTION
 
@@ -2835,7 +2895,7 @@ FUNCTION handleMultiPartUpload(
     LET maxToRead = ctlen - numRead
     MYASSERT(maxToRead >= 0)
     IF didRead <= 0 THEN
-      DISPLAY "handleMultiPartUpload read failed:didRead:", didRead
+      CALL warning(sfmt("handleMultiPartUpload read failed:didRead:%1", didRead))
       RETURN
     END IF
     LET baRead = baoff + didRead
@@ -2844,7 +2904,8 @@ FUNCTION handleMultiPartUpload(
       IF prev IS NOT NULL THEN
         --merge the previous array in to be able to
         --check for the boundary
-        CALL merge2BA(ba, prev, baRead, blen, MAXB)
+        CALL merge2BA(
+            ba, prev, baRead, blen, MAXB)
             RETURNING ba, prev, baRead, startidx
       ELSE
         MYASSERT(baRead < MAXB)
@@ -2876,7 +2937,8 @@ FUNCTION handleMultiPartUpload(
       --buf is completely full or we need to repeat until full
       IF maxToRead == 0 THEN
         MYASSERT(prev IS NOT NULL)
-        CALL merge2BA(ba, prev, baRead, blen, MAXB)
+        CALL merge2BA(
+            ba, prev, baRead, blen, MAXB)
             RETURNING ba, prev, baRead, startidx
         GOTO testboundary
       END IF
@@ -2941,7 +3003,6 @@ FUNCTION handleWaitContent(x INT, dIn DataInputStream)
       CALL handleSimplePost(x, dIn, path)
     END IF
   END IF
-  LET _s[x].state = S_FINISH
   CALL httpHandler(x)
 END FUNCTION
 
@@ -2952,7 +3013,7 @@ FUNCTION handleVMFinish(v INT)
   MYASSERT(_selDict.contains(procId))
   LET vmidx = _selDict[procId]
   MYASSERT(vmidx == v)
-  IF _useSSE THEN
+  IF _v[vmidx].useSSE THEN
     LET httpIdx = getSSEIdxFor(vmidx)
   ELSE
     LET httpIdx = _v[vmidx].httpIdx
@@ -2962,28 +3023,61 @@ FUNCTION handleVMFinish(v INT)
           printSel(-v), IIF(httpIdx > 0, printSel(httpIdx), "notfound")))
   IF httpIdx <> 0 THEN
     CALL handleVM(vmidx, TRUE, httpIdx)
+    IF _v[vmidx].useSSE THEN
+      CALL selDictRemove(_v[vmidx].procId)
+    END IF
   END IF
   LET _v[vmidx].state = S_FINISH
+  LET _v[vmidx].dIn = close_dIn(_v[vmidx].dIn)
+  LET _v[vmidx].chan = close_chan(_v[vmidx].chan)
+END FUNCTION
+
+FUNCTION close_dIn(dIn DataInputStream)
+  IF dIn IS NOT NULL THEN
+    CALL dIn.close()
+  END IF
+  RETURN NULL
+END FUNCTION
+
+FUNCTION close_dOut(dOut DataOutputStream)
+  IF dOut IS NOT NULL THEN
+    CALL dOut.close()
+  END IF
+  RETURN NULL
+END FUNCTION
+
+FUNCTION close_key(key SelectionKey)
+  IF key IS NOT NULL THEN
+    CALL key.cancel()
+  END IF
+  RETURN NULL
+END FUNCTION
+
+FUNCTION close_chan(chan SocketChannel)
+  DEFINE ins InputStream
+  IF chan IS NOT NULL THEN
+    IF NOT chan.socket().isClosed() THEN
+      LET ins = chan.socket().getInputStream()
+      CALL ins.close()
+      CALL chan.socket().close()
+    END IF
+    CALL chan.close()
+  END IF
+  RETURN NULL
 END FUNCTION
 
 FUNCTION closeSel(x INT)
-  IF _s[x].dIn IS NOT NULL THEN
-    CALL _s[x].dIn.close()
-    LET _s[x].dIn = NULL
-  END IF
-  IF _s[x].dOut IS NOT NULL THEN
-    CALL _s[x].dOut.close()
-    LET _s[x].dOut = NULL
-  END IF
-  CALL _s[x].chan.close()
-  LET _s[x].chan = NULL
-  LET _s[x].key = NULL
+  CALL log(SFMT("closeSel:%1", printSel(x)))
+  LET _s[x].dIn = close_dIn(_s[x].dIn)
+  LET _s[x].dOut = close_dOut(_s[x].dOut)
+  LET _s[x].key = close_key(_s[x].key)
+  LET _s[x].chan = close_chan(_s[x].chan)
   LET _s[x].active = FALSE
 END FUNCTION
 
 FUNCTION checkReRegisterVMFromHTTP(v INT)
   MYASSERT(v > 0 AND v <= _v.getLength())
-  IF _currIdx <= 0 OR (NOT _v[v].active) OR (NOT _v[v].chan.isBlocking()) THEN
+  IF _currIdx <= 0 OR (NOT _v[v].active) OR (_v[v].chan IS NULL OR NOT _v[v].chan.isBlocking()) THEN
     RETURN
   END IF
   {
@@ -2998,7 +3092,7 @@ FUNCTION checkReRegister(isVM BOOLEAN, v INT, c INT)
   DEFINE empty TConnectionRec
   DEFINE state STRING
   LET state = IIF(isVM, _v[v].state, _s[c].state)
-  --DISPLAY "checkReRegister:", printSel(c)
+  --DISPLAY "checkReRegister:", printSel(c), ",state:", state
   IF (state <> S_FINISH AND state <> S_WAITFORVM)
       OR (newChan
               := ((NOT isVM)
@@ -3511,11 +3605,10 @@ FUNCTION checkGDC(url STRING)
     CALL myErr(SFMT("Can't find GDC executable at '%1'", gdc))
   END IF
   IF NOT os.Path.executable(gdc) THEN
-    DISPLAY "Warning:os.Path not executable:", gdc
+    CALL warning(sfmt("checkGDC:os.Path not executable:%1", gdc))
   END IF
   LET cmd = SFMT("%1 --listen none -p 8000 -u %2", quote(gdc), url)
   CALL log(SFMT("GDC cmd:%1", cmd))
-  DISPLAY "cmd:", cmd
   RUN cmd WITHOUT WAITING
 END FUNCTION
 
@@ -3537,7 +3630,7 @@ FUNCTION getGDCPath()
     IF os.Path.exists(gdc) THEN
       RETURN gdc
     END IF
-    DISPLAY "Warning: GDC doesn't exist at:", gdc
+    CALL warning(sfmt("getGDCPath: GDC doesn't exist at:%1", gdc))
   END IF
   LET orig = fgl_getenv("FGLSERVER")
   LET fglserver = fgl_getenv("GDCFGLSERVER")
@@ -3572,6 +3665,7 @@ END FUNCTION
 
 FUNCTION openBrowser(url)
   DEFINE url, cmd, browser, pre, lbrowser STRING
+  CALL log(sfmt("openBrowser url:%1",url))
   IF fgl_getenv("SLAVE") IS NOT NULL THEN
     CALL log("gdcm SLAVE set,return")
     RETURN
@@ -3621,7 +3715,7 @@ FUNCTION openBrowser(url)
           LET cmd = SFMT("xdg-open '%1'", url)
       END CASE
   END CASE
-  CALL log(SFMT("openBrowser:%1", cmd))
+  CALL log(SFMT("openBrowser cmd:%1", cmd))
   RUN cmd WITHOUT WAITING
 END FUNCTION
 
@@ -3722,6 +3816,7 @@ FUNCTION sendFileToVM(vmidx INT, num INT, name STRING)
     CALL buf.position(0)
     CALL buf.limit(30000)
   END WHILE
+  CALL chan.close()
   CALL sendEof(vmidx, num)
   CALL setWait(vmidx)
 END FUNCTION
@@ -3832,7 +3927,7 @@ FUNCTION handleFTAck(vmidx INT, dIn DataInputStream, num INT, remaining INT)
       END IF
       MYASSERT(createOutputStream(vmidx, 0, cacheFileName(ftg.name), FALSE) == TRUE)
     ELSE
-      DISPLAY "!!handleFTAck: no ftg for:", num
+      CALL log(sfmt("  no ftg for:%1", num))
     END IF
   END IF
   RETURN remaining
@@ -4006,6 +4101,7 @@ FUNCTION handleDelayedImage(vmidx INT, ftg FTGetImage)
   END IF
   MYASSERT(ftg.httpIdx > 0)
   LET x = ftg.httpIdx
+  MYASSERT(_s[x].state==S_WAITFORVM)
   CALL processFile(x, cachedFile, TRUE)
   CALL finishHttp(x)
 END FUNCTION
@@ -4945,6 +5041,6 @@ FUNCTION genSID()
   LET s = replace(s, ".", "_")
   LET s = replace(s, ":", "C")
   LET s = replace(s, "-", "A")
-  DISPLAY "genSID:", s
+  CALL log(sfmt("genSID:%1", s))
   RETURN s
 END FUNCTION
