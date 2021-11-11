@@ -48,7 +48,7 @@ FUNCTION waitReadLine(ch base.Channel, fname STRING) RETURNS STRING
   FOR i = 1 TO 10000
     LET line = ch.readLine()
     IF line IS NOT NULL THEN
-      DISPLAY line
+      --DISPLAY line
       RETURN line
     ELSE
       CALL Thread.sleep(1)
@@ -75,9 +75,8 @@ FUNCTION start_process(cmds DYNAMIC ARRAY OF STRING) RETURNS(STRING, Process)
   DEFINE proc Process
   DEFINE line STRING
   LET pb = ProcessBuilder.create(fArr2jArr(cmds))
-  CALL pb.redirectErrorStream(TRUE)
   LET proc = pb.start()
-  LET is = InputStreamReader.create(proc.getInputStream())
+  LET is = InputStreamReader.create(proc.getErrorStream())
   LET br = BufferedReader.create(is)
   LET line = br.readLine()
   RETURN line, proc
@@ -88,11 +87,12 @@ FUNCTION start_fgljp() RETURNS(fgljp.TStartEntries, STRING)
   DEFINE dir, tmp, line, fgljp_p STRING
   DEFINE entries fgljp.TStartEntries
   LET dir = os.Path.dirName(arg_val(0))
-  LET fgljp_p = os.Path.join(dir, "fgljp")
+  LET fgljp_p = os.Path.join(dir, "fgljp.42m")
   LET tmp = fgljp.makeTempName()
-  RUN SFMT("%1 > %2", fgljp_p, tmp) WITHOUT WAITING
+  RUN SFMT("fglrun %1 > %2", fgljp_p, tmp) WITHOUT WAITING
   LET ch = waitOpen(tmp)
   LET line = waitReadLine(ch, tmp)
+  --DISPLAY "line:",line
   CALL util.JSON.parse(line, entries)
   RETURN entries.*, tmp
 END FUNCTION
@@ -108,16 +108,18 @@ FUNCTION start_ssh(localPort INT)
   LET aLen = length(ALLO)
   LET tmp = fgljp.makeTempName()
   MYASSERT(NOT os.Path.exists(tmp))
-  --LET tmp=tmp
   --we use the 0 remote port and let this connection open until we die
+  --exclusively for forwaring the remote side to out fgljp propgram
   -- -N means we do no perform a command
   IF fgljp.isWin() THEN
     --unfortunately there isn't the master control socket property
     --in the standard Win32/64 ssh client
     --fglrun hangs on a popen() for this process, so we use Java in this
     --case to start and read from the process...
+    --furthermore the -4 (IPv4) flag is necessary to make the relay to localhost happen
+    --note 'localhost' is much slower than '127.0.0.1' when forwarding
     LET cmd =
-        SFMT('["ssh","-N","-R","0:localhost:%1","%2"]', localPort, arg_val(1))
+        SFMT('["ssh","-4","-N","-R","0:127.0.0.1:%1","%2"]', localPort, arg_val(1))
     CALL util.JSON.parse(cmd, cmdarr)
     CALL start_process(cmdarr) RETURNING line, proc
   ELSE
@@ -131,21 +133,21 @@ FUNCTION start_ssh(localPort INT)
     LET ch = waitOpen(tmp)
     LET line = waitReadLine(ch, tmp)
   END IF
-  DISPLAY "ssh alloc line:", line
-  MYASSERT_MSG((idx := line.getIndexOf("Allocated port ", 1)) > 0, sfmt("Can't get allocated port out of '%1'", line))
+  DISPLAY "ssh port forward line:", line
+  MYASSERT_MSG((idx := line.getIndexOf(ALLO, 1)) > 0, sfmt("Can't get allocated port out of '%1'", line))
   MYASSERT((idx2 := line.getIndexOf(" ", idx + aLen + 1)) > 0)
   LET remotePort = line.subString(idx + aLen + 1, idx2 - 1)
   MYASSERT(remotePort IS NOT NULL)
   LET rFGLSERVER = SFMT("localhost:%1", remotePort - 6400)
-  DISPLAY "remotePort:", remotePort, ",remote (LC_)FGLSERVER:", rFGLSERVER
+  DISPLAY "remote FGLSERVER=", rFGLSERVER
   CALL fgl_setenv("FGLSERVER", rFGLSERVER)
   CALL fgl_setenv("LC_FGLSERVER", rFGLSERVER)
   LET cmd = SFMT("ssh -o SendEnv=FGLSERVER %1", arg_val(1))
-  DISPLAY "cmd is:", cmd
+  --DISPLAY "cmd is:", cmd
   RUN cmd
-  DISPLAY "terminate port forwarder ssh"
+  --DISPLAY "terminate port forwarder ssh"
   IF fgljp.isWin() THEN
-    CALL proc.destroy()
+    CALL proc.destroyForcibly()
   ELSE
     CALL ch.close()
     --close the master control connection
@@ -157,7 +159,7 @@ END FUNCTION
 
 FUNCTION kill(pid INT)
   IF fgljp.isWin() THEN
-    RUN SFMT("taskkill /PID %1 /T", pid)
+    RUN SFMT("taskkill /F /PID %1 /T >NUL 2>&1", pid)
   ELSE
     RUN SFMT("kill %1", pid)
   END IF
