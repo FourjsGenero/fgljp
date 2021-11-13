@@ -324,6 +324,12 @@ MAIN
   IF _opt_program IS NULL THEN
     CALL writeStartFile(port)
   END IF
+  IF fgl_getenv("FGLJPSSH_PARENT") == "1" THEN
+    DEFER INTERRUPT
+    IF isWin() THEN
+      CALL printStderr("fgljp running here, don't close this console, just minimize it")
+    END IF
+  END IF
   CALL log(
       SFMT("listening on real port:%1,FGLSERVER:%2",
           port, fgl_getenv("FGLSERVER")))

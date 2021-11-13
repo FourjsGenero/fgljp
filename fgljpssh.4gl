@@ -21,6 +21,8 @@ CONSTANT MAXLINES = 10
 MAIN
   DEFINE entries fgljp.TStartEntries
   DEFINE tmp STRING
+  DEFER INTERRUPT --prevent Ctrl-c on windows bailing us out
+  CALL fgl_setenv("FGLJPSSH_PARENT","1")
   CALL parseArgs()
   CALL start_fgljp() RETURNING entries.*, tmp
   CALL start_ssh(entries.port)
@@ -169,12 +171,16 @@ END FUNCTION
 
 FUNCTION start_fgljp() RETURNS(fgljp.TStartEntries, STRING)
   DEFINE ch base.Channel
-  DEFINE dir, tmp, line, fgljp_p STRING
+  DEFINE dir, tmp, line, fgljp_p, cmd STRING
   DEFINE entries fgljp.TStartEntries
   LET dir = os.Path.dirName(arg_val(0))
   LET fgljp_p = os.Path.join(dir, "fgljp.42m")
   LET tmp = fgljp.makeTempName()
-  RUN SFMT("fglrun %1 > %2", fgljp_p, tmp) WITHOUT WAITING
+  LET cmd = sfmt("fglrun %1 > %2", fgljp_p, tmp)
+  --windows: we need a separate console for fgljp to avoid Ctrl-c
+  --affecting it, TODO: write a wrapper to hide the console window
+  LET cmd = IIF(fgljp.isWin(), sfmt('start cmd /c "%1"',cmd),cmd)
+  RUN cmd WITHOUT WAITING
   LET ch = waitOpen(tmp)
   LET line = waitReadLine(ch, tmp)
   DISPLAY "start_fgljp:", line
