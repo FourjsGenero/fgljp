@@ -4,6 +4,7 @@ IMPORT FGL fgljp
 IMPORT FGL mygetopt
 IMPORT JAVA java.lang.Thread
 IMPORT JAVA java.lang.ProcessBuilder
+IMPORT JAVA java.lang.ProcessBuilder.Redirect
 IMPORT JAVA java.lang.Process
 IMPORT JAVA java.lang.String
 IMPORT JAVA java.io.InputStreamReader
@@ -21,7 +22,6 @@ CONSTANT MAXLINES = 10
 MAIN
   DEFINE entries fgljp.TStartEntries
   DEFINE tmp STRING
-  DEFER INTERRUPT --prevent Ctrl-c on windows bailing us out
   CALL fgl_setenv("FGLJPSSH_PARENT","1")
   CALL parseArgs()
   CALL start_fgljp() RETURNING entries.*, tmp
@@ -38,6 +38,7 @@ FUNCTION parseArgs()
   DEFINE o mygetopt.GetoptOptions
   DEFINE opt_arg STRING
   DEFINE i, cnt INT
+  DEFINE nullstr STRING
 
   LET i = o.getLength() + 1
   LET o[i].name = "tunnel-only"
@@ -91,6 +92,10 @@ FUNCTION parseArgs()
   IF _opt_tunnelonly AND _opt_ssh_bash THEN
     CALL myErr("--tunnel-only(-t) and --bash(-b) options are exclusive")
   END IF
+  LET nullstr="0"
+  IF _opt_tunnelonly AND NOT nullstr.equals(fgl_getenv("FGLGUI")) THEN
+    CALL myErr("Please set FGLGUI=0 for --tunnel-only(-t)")
+  END IF
   IF _opt_ssh_host IS NULL OR _opt_ssh_host.getLength() == 0 THEN
     CALL mygetopt.displayUsage(gr, "<remote host> ?ssh_command?")
     EXIT PROGRAM 1
@@ -123,6 +128,7 @@ END FUNCTION
 
 FUNCTION waitReadLine(ch base.Channel, fname STRING) RETURNS STRING
   DEFINE line STRING
+  LET fname = NULL
   WHILE TRUE
     LET line = ch.readLine()
     IF line IS NOT NULL THEN
@@ -147,25 +153,30 @@ FUNCTION fArr2jArr(farr DYNAMIC ARRAY OF STRING) RETURNS SArray
   RETURN sarr
 END FUNCTION
 
+--uses Java API's to redirect the ssh stderr to us to capture the
+--port forwarding output
+--the Process is used later on to be able to terminate it
 FUNCTION start_process(cmds DYNAMIC ARRAY OF STRING) RETURNS(STRING, Process)
   DEFINE is InputStreamReader
   DEFINE br BufferedReader
   DEFINE pb ProcessBuilder
   DEFINE proc Process
   DEFINE line STRING
-  DEFINE i INT
   LET pb = ProcessBuilder.create(fArr2jArr(cmds))
+  --ensure ssh reads from our stdin
+  CALL pb.redirectInput(ProcessBuilder.Redirect.INHERIT)
+  --and writes to our stdout (Passwd etc)
+  CALL pb.redirectOutput(ProcessBuilder.Redirect.INHERIT)
   LET proc = pb.start()
   LET is = InputStreamReader.create(proc.getErrorStream())
   LET br = BufferedReader.create(is)
-  FOR i = 1 TO MAXLINES
+  WHILE TRUE
     LET line = br.readLine()
+    --CALL printStderr(sfmt("start_process:'%1'",line))
     IF line.getIndexOf(ALLO, 1) > 0 THEN
-      EXIT FOR
-    ELSE
-      CALL printStderr(line)
+      EXIT WHILE
     END IF
-  END FOR
+  END WHILE
   RETURN line, proc
 END FUNCTION
 
@@ -232,6 +243,7 @@ FUNCTION start_ssh(localPort INT)
     END FOR
   END IF
   DISPLAY "ssh port forward line:", line
+  DEFER INTERRUPT --prevent Ctrl-c bailing us out
   MYASSERT_MSG((idx := line.getIndexOf(ALLO, 1)) > 0, sfmt("Can't get allocated port out of '%1'", line))
   MYASSERT((idx2 := line.getIndexOf(" ", idx + aLen + 1)) > 0)
   LET remotePort = line.subString(idx + aLen + 1, idx2 - 1)
