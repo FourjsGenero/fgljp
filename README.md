@@ -45,7 +45,7 @@ To be able to work conveniently with remote hosts there is the fgljpssh command:
 
 Prerequisites:
 FGL >= 3.10
-JAVA >= 8
+JAVA >= 9
 
 
 # How it works

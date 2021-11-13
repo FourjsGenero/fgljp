@@ -1,6 +1,6 @@
 IMPORT FGL fgldialog
 MAIN
-  DEFINE arg,win STRING
+  DEFINE arg, win STRING
   DEFINE num INT
   LET arg = arg_val(1)
   IF arg IS NOT NULL THEN
@@ -25,13 +25,19 @@ MAIN
       MESSAGE SFMT("TEST%1", num)
       --ON IDLE 10
       --  MESSAGE "IDLE"
-    COMMAND "10 frontcalls" 
+    COMMAND "10 frontcalls"
       CALL fc10()
     COMMAND "debugger frontcall"
-      CALL ui.Interface.frontCall("debugger","getcurrentwindow",[],[win])
-      MESSAGE "activeWindow:",win
+      CALL ui.Interface.frontCall("debugger", "getcurrentwindow", [], [win])
+      MESSAGE "activeWindow:", win
     COMMAND "Client Info"
-      CALL fgl_winMessage("Client Info",sfmt("getFrontEndName:%1,getFrontEndVersion:%2,feinfo fename:%3",ui.Interface.getFrontEndName(), ui.Interface.getFrontEndVersion(),feinfo_fename()),"info")
+      CALL fgl_winMessage(
+          "Client Info",
+          SFMT("getFrontEndName:%1,getFrontEndVersion:%2,feinfo fename:%3",
+              ui.Interface.getFrontEndName(),
+              ui.Interface.getFrontEndVersion(),
+              feinfo_fename()),
+          "info")
     COMMAND "Show Form"
       CALL showForm("logo.png")
     COMMAND "RUN"
@@ -51,7 +57,7 @@ MAIN
         DISPLAY "fgl_putfile successful"
         MESSAGE "fgl_putfile successful"
       CATCH
-        ERROR "fgl_putfile failed:",err_get(status)
+        ERROR "fgl_putfile failed:", err_get(status)
       END TRY
     COMMAND "getfile"
       TRY
@@ -113,7 +119,7 @@ FUNCTION fc10()
   CONSTANT MAXCNT = 10
   LET starttime = CURRENT
   FOR i = 1 TO MAXCNT
-    LET fename=feinfo_fename()
+    LET fename = feinfo_fename()
   END FOR
   LET diff = CURRENT - starttime
   --CALL fgl_winMessage("Info",SFMT("time:%1,time for one frontcall:%2",diff,diff/MAXCNT),"info")

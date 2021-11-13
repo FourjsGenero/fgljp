@@ -77,6 +77,7 @@ TYPE MyByteArray ARRAY[] OF TINYINT
 TYPE TStringDict DICTIONARY OF STRING
 TYPE TStringArr DYNAMIC ARRAY OF STRING
 TYPE ByteArray ARRAY[] OF TINYINT
+TYPE LinkOptionArray ARRAY[] OF java.nio.file.LinkOption
 
 CONSTANT S_INIT = "Init"
 CONSTANT S_HEADERS = "Headers"
@@ -338,7 +339,8 @@ MAIN
     CALL setup_program(priv, pub, port)
   END IF
   WHILE TRUE
-    CALL log(sfmt("_didAcceptOnce:%1,_checkGoOut:%2",_didAcceptOnce,_checkGoOut))
+    CALL log(
+        SFMT("_didAcceptOnce:%1,_checkGoOut:%2", _didAcceptOnce, _checkGoOut))
     IF _didAcceptOnce AND _checkGoOut AND canGoOut() THEN
       EXIT WHILE
     END IF
@@ -419,14 +421,16 @@ END FUNCTION
 FUNCTION selDictRemove(procId STRING)
   CALL _selDict.remove(procId)
   CALL log(
-        SFMT("selDictRemove after remove procId %1:%2",
-            procId, util.JSON.stringify(_selDict.getKeys())))
+      SFMT("selDictRemove after remove procId %1:%2",
+          procId, util.JSON.stringify(_selDict.getKeys())))
   LET _checkGoOut = TRUE
 END FUNCTION
 
 FUNCTION canGoOut()
   LET _checkGoOut = FALSE
-  CALL log(sfmt("canGoOut: _selDict.getLength:%1,keys:%2",_selDict.getLength(),util.JSON.stringify(_selDict.getKeys())))
+  CALL log(
+      SFMT("canGoOut: _selDict.getLength:%1,keys:%2",
+          _selDict.getLength(), util.JSON.stringify(_selDict.getKeys())))
   IF _selDict.getLength() == 0 THEN
     CALL log("canGoOut: no VM channels anymore")
     IF _opt_program IS NOT NULL OR _opt_autoclose THEN
@@ -1538,12 +1542,13 @@ END FUNCTION
 
 FUNCTION vmidxFromAppCookie(x INT, fname STRING)
   DEFINE vmidx INT
-  LET vmidx=vmidxFromAppCookieInt(x, fname)
-  LET vmidx=IIF(vmidx>_v.getLength(),0,vmidx)
-  IF vmidx>0 AND vmidx<=_v.getLength() THEN
-    IF _v[vmidx].state==S_FINISH THEN
-      CALL log(sfmt("vmidxFromAppCookie: caught vmidx for dead VM:%1, fname:%2",
-                  printV(vmidx),fname))
+  LET vmidx = vmidxFromAppCookieInt(x, fname)
+  LET vmidx = IIF(vmidx > _v.getLength(), 0, vmidx)
+  IF vmidx > 0 AND vmidx <= _v.getLength() THEN
+    IF _v[vmidx].state == S_FINISH THEN
+      CALL log(
+          SFMT("vmidxFromAppCookie: caught vmidx for dead VM:%1, fname:%2",
+              printV(vmidx), fname))
       RETURN 0
     END IF
   END IF
@@ -2155,8 +2160,7 @@ END FUNCTION
 FUNCTION extractMetaVar(line STRING, varname STRING, forceFind BOOLEAN)
   DEFINE valueIdx1, valueIdx2 INT
   DEFINE value STRING
-  CALL extractMetaVarSub(
-      line, varname, forceFind)
+  CALL extractMetaVarSub(line, varname, forceFind)
       RETURNING value, valueIdx1, valueIdx2
   RETURN value
 END FUNCTION
@@ -2164,8 +2168,7 @@ END FUNCTION
 FUNCTION patchProcId(line STRING, procId STRING)
   DEFINE valueIdx1, valueIdx2 INT
   DEFINE value STRING
-  CALL extractMetaVarSub(
-      line, "procId", TRUE)
+  CALL extractMetaVarSub(line, "procId", TRUE)
       RETURNING value, valueIdx1, valueIdx2
   LET line =
       line.subString(1, valueIdx1 - 1),
@@ -2349,10 +2352,10 @@ END FUNCTION
 
 FUNCTION setEmptyVMConnection(v INT)
   DEFINE empty TVMRec
-  CALL log(sfmt("setEmptyVMConnection:%1",printV(v)))
+  CALL log(SFMT("setEmptyVMConnection:%1", printV(v)))
   LET _v[v].* = empty.* --resets also active
   LET _lastVM = IIF(v == _lastVM, 0, _lastVM)
-  CALL log(sfmt("  _lastVM=%1",_lastVM))
+  CALL log(SFMT("  _lastVM=%1", _lastVM))
 END FUNCTION
 
 FUNCTION handleConnection(key SelectionKey)
@@ -2895,7 +2898,8 @@ FUNCTION handleMultiPartUpload(
     LET maxToRead = ctlen - numRead
     MYASSERT(maxToRead >= 0)
     IF didRead <= 0 THEN
-      CALL warning(sfmt("handleMultiPartUpload read failed:didRead:%1", didRead))
+      CALL warning(
+          SFMT("handleMultiPartUpload read failed:didRead:%1", didRead))
       RETURN
     END IF
     LET baRead = baoff + didRead
@@ -2904,8 +2908,7 @@ FUNCTION handleMultiPartUpload(
       IF prev IS NOT NULL THEN
         --merge the previous array in to be able to
         --check for the boundary
-        CALL merge2BA(
-            ba, prev, baRead, blen, MAXB)
+        CALL merge2BA(ba, prev, baRead, blen, MAXB)
             RETURNING ba, prev, baRead, startidx
       ELSE
         MYASSERT(baRead < MAXB)
@@ -2937,8 +2940,7 @@ FUNCTION handleMultiPartUpload(
       --buf is completely full or we need to repeat until full
       IF maxToRead == 0 THEN
         MYASSERT(prev IS NOT NULL)
-        CALL merge2BA(
-            ba, prev, baRead, blen, MAXB)
+        CALL merge2BA(ba, prev, baRead, blen, MAXB)
             RETURNING ba, prev, baRead, startidx
         GOTO testboundary
       END IF
@@ -3077,7 +3079,9 @@ END FUNCTION
 
 FUNCTION checkReRegisterVMFromHTTP(v INT)
   MYASSERT(v > 0 AND v <= _v.getLength())
-  IF _currIdx <= 0 OR (NOT _v[v].active) OR (_v[v].chan IS NULL OR NOT _v[v].chan.isBlocking()) THEN
+  IF _currIdx <= 0
+      OR (NOT _v[v].active)
+      OR (_v[v].chan IS NULL OR NOT _v[v].chan.isBlocking()) THEN
     RETURN
   END IF
   {
@@ -3310,9 +3314,21 @@ FUNCTION hasPrefix(s STRING, prefix STRING)
   RETURN s.getIndexOf(prefix, 1) == 1
 END FUNCTION
 
-FUNCTION getLastModified(fn STRING)
-  DEFINE m INT
-  LET m = util.Datetime.toSecondsSinceEpoch(os.Path.mtime(fn))
+FUNCTION getLastModified(fn STRING) RETURNS INT
+  DEFINE m, m2 INT
+  IF fgl_getversion() >= 32000 THEN
+    LET m = util.Datetime.toSecondsSinceEpoch(os.Path.mtime(fn))
+    LET m2 = getLastModifiedJ(fn)
+    IF m <> m2 THEN
+      CALL printStderr(
+          SFMT("getLastModified: fn:%1,m:%2,m2:%3,mtime:%4", os.Path.mtime(fn)))
+    END IF
+    MYASSERT(m == m2)
+  ELSE
+    --FGL bug, returns NULL, we need to use Java
+    LET m = getLastModifiedJ(fn)
+  END IF
+  MYASSERT(m IS NOT NULL)
   RETURN m
 END FUNCTION
 
@@ -3326,6 +3342,7 @@ FUNCTION getPath(fn STRING) RETURNS java.nio.file.Path
   RETURN p
 END FUNCTION
 
+--not yet possible with Genero
 FUNCTION setLastModified(fn STRING, t INT)
   DEFINE p Path
   DEFINE ld LocalDateTime
@@ -3341,6 +3358,18 @@ FUNCTION setLastModified(fn STRING, t INT)
   CALL Files.setLastModifiedTime(p, ft)
 END FUNCTION
 
+FUNCTION getLastModifiedJ(fn STRING) RETURNS INT
+  DEFINE p Path
+  DEFINE ft FileTime
+  DEFINE l LinkOptionArray
+  DEFINE secs INT
+  LET p = getPath(fn)
+  LET l = LinkOptionArray.create(0)
+  LET ft = Files.getLastModifiedTime(p, l)
+  LET secs = ft.toMillis() / 1000
+  RETURN secs
+END FUNCTION
+
 FUNCTION lookupInCache(name STRING) RETURNS(BOOLEAN, INT, INT)
   DEFINE cachedFile STRING
   DEFINE s, t INT
@@ -3352,7 +3381,7 @@ FUNCTION lookupInCache(name STRING) RETURNS(BOOLEAN, INT, INT)
   END IF
   LET s = os.Path.size(cachedFile)
   LET t = getLastModified(cachedFile)
-  --DISPLAY "t:", t, ",os.Path.mtime:", os.Path.mtime(cachedFile)
+  --CALL printStderr(sfmt("lookupInCache:%1,s:%2,t:%3,os.Path.mtime:%4",cachedFile,s,t,os.Path.mtime(cachedFile)))
   RETURN TRUE, s, t
 END FUNCTION
 
@@ -3605,7 +3634,7 @@ FUNCTION checkGDC(url STRING)
     CALL myErr(SFMT("Can't find GDC executable at '%1'", gdc))
   END IF
   IF NOT os.Path.executable(gdc) THEN
-    CALL warning(sfmt("checkGDC:os.Path not executable:%1", gdc))
+    CALL warning(SFMT("checkGDC:os.Path not executable:%1", gdc))
   END IF
   LET cmd = SFMT("%1 --listen none -p 8000 -u %2", quote(gdc), url)
   CALL log(SFMT("GDC cmd:%1", cmd))
@@ -3630,7 +3659,7 @@ FUNCTION getGDCPath()
     IF os.Path.exists(gdc) THEN
       RETURN gdc
     END IF
-    CALL warning(sfmt("getGDCPath: GDC doesn't exist at:%1", gdc))
+    CALL warning(SFMT("getGDCPath: GDC doesn't exist at:%1", gdc))
   END IF
   LET orig = fgl_getenv("FGLSERVER")
   LET fglserver = fgl_getenv("GDCFGLSERVER")
@@ -3665,7 +3694,7 @@ END FUNCTION
 
 FUNCTION openBrowser(url)
   DEFINE url, cmd, browser, pre, lbrowser STRING
-  CALL log(sfmt("openBrowser url:%1",url))
+  CALL log(SFMT("openBrowser url:%1", url))
   IF fgl_getenv("SLAVE") IS NOT NULL THEN
     CALL log("gdcm SLAVE set,return")
     RETURN
@@ -3927,7 +3956,7 @@ FUNCTION handleFTAck(vmidx INT, dIn DataInputStream, num INT, remaining INT)
       END IF
       MYASSERT(createOutputStream(vmidx, 0, cacheFileName(ftg.name), FALSE) == TRUE)
     ELSE
-      CALL log(sfmt("  no ftg for:%1", num))
+      CALL log(SFMT("  no ftg for:%1", num))
     END IF
   END IF
   RETURN remaining
@@ -4101,7 +4130,7 @@ FUNCTION handleDelayedImage(vmidx INT, ftg FTGetImage)
   END IF
   MYASSERT(ftg.httpIdx > 0)
   LET x = ftg.httpIdx
-  MYASSERT(_s[x].state==S_WAITFORVM)
+  MYASSERT(_s[x].state == S_WAITFORVM)
   CALL processFile(x, cachedFile, TRUE)
   CALL finishHttp(x)
 END FUNCTION
@@ -4155,8 +4184,10 @@ FUNCTION handleDelayedImageInt(vmidx INT, ftg FTGetImage, cachedFile STRING)
   MYASSERT(os.Path.size(cachedFile) == ftg.fileSize)
   LET t = getLastModified(cachedFile)
   IF t <> ftg.mtime THEN
+    --CALL printStderr(sfmt("t:%1<>ftg.mtime:%2 cachedFile:%3, os.Path.mtime:%4",t,ftg.mtime,cachedFile,os.Path.mtime(cachedFile)))
     CALL setLastModified(cachedFile, ftg.mtime)
     LET t = getLastModified(cachedFile)
+    --CALL printStderr(sfmt("  new t:%1,os.Path.mtime:%2",t,os.Path.mtime(cachedFile)))
     MYASSERT(ftg.mtime == t)
     --IF ftg.mtime <> t THEN
     --  DISPLAY "currt2:", t, "<>", ftg.mtime
@@ -5041,6 +5072,6 @@ FUNCTION genSID()
   LET s = replace(s, ".", "_")
   LET s = replace(s, ":", "C")
   LET s = replace(s, "-", "A")
-  CALL log(sfmt("genSID:%1", s))
+  CALL log(SFMT("genSID:%1", s))
   RETURN s
 END FUNCTION

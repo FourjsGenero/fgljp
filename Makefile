@@ -37,6 +37,7 @@ format:
 	rm -f *.4gl~
 	fglcomp -M --format --fo-inplace mygetopt.4gl
 	fglcomp -M --format --fo-inplace fgljp.4gl
+	fglcomp -M --format --fo-inplace fgljpssh.4gl
 	fglcomp -M --format --fo-inplace demo.4gl
 
 clean_prog:
