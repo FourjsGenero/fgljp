@@ -228,9 +228,12 @@ FUNCTION start_fgljp() RETURNS(fgljp.TStartEntries, STRING)
   LET fgljp_p = os.Path.join(dir, "fgljp.42m")
   LET tmp = fgljp.makeTempName()
   LET cmd = SFMT("fglrun %1 > %2", fgljp_p, tmp)
-  --windows: we need a separate console for fgljp to avoid Ctrl-c
-  --affecting it, TODO: write a wrapper to hide the console window
-  LET cmd = IIF(fgljp.isWin(), SFMT('start cmd /c "%1"', cmd), cmd)
+  IF _opt_fgltty IS NULL THEN
+    --windows ssh: we need a separate console for fgljp to avoid Ctrl-c
+    --affecting it, TODO: write a wrapper to hide the console window
+    --not needed for fgltty
+    LET cmd = IIF(fgljp.isWin(), SFMT('start cmd /c "%1"', cmd), cmd)
+  END IF
   RUN cmd WITHOUT WAITING
   LET ch = waitOpen(tmp)
   LET line = waitReadLine(ch, tmp)
@@ -262,7 +265,7 @@ END FUNCTION
 FUNCTION start_fgltty(localPort INT)
   DEFINE cmd, usr, host, line STRING
   DEFINE ch base.Channel
-  LET cmd = SFMT("%1 -P SSH ", _opt_fgltty)
+  LET cmd = SFMT("%1 -P SSH ", quote(_opt_fgltty))
   CALL extract_user(_opt_ssh_host) RETURNING usr, host
   IF usr IS NOT NULL THEN
     LET cmd = SFMT("%1 -u %2 ", cmd, usr)
@@ -281,6 +284,11 @@ FUNCTION start_fgltty(localPort INT)
   ELSE
     LET cmd = SFMT('%1 -c "%2"', _opt_ssh_args)
   END IF
+  IF cmd.getCharAt(1)=='"' AND fgljp.isWin() THEN
+    --quote whole cmd again
+    LET cmd='"',cmd,'"'
+  END IF
+  DISPLAY "cmd:",cmd
   LET ch = base.Channel.create()
   CALL ch.openPipe(cmd, "r")
   WHILE (line := ch.readLine()) IS NOT NULL
@@ -399,4 +407,28 @@ FUNCTION kill(pid INT)
   ELSE
     RUN SFMT("kill %1", pid)
   END IF
+END FUNCTION
+
+FUNCTION already_quoted(path)
+  DEFINE path,first,last STRING
+  LET first=NVL(path.getCharAt(1),"NULL")
+  LET last=NVL(path.getCharAt(path.getLength()),"NULL")
+  IF isWin() THEN
+    RETURN (first=='"' AND last=='"')
+  END IF
+  RETURN (first=="'" AND last=="'") OR (first=='"' AND last=='"')
+END FUNCTION
+
+FUNCTION quote(path)
+  DEFINE path STRING
+  IF path.getIndexOf(" ",1)>0 THEN
+    IF NOT already_quoted(path) THEN
+      LET path='"',path,'"'
+    END IF
+  ELSE
+    IF already_quoted(path) AND isWin() THEN --remove quotes(Windows)
+      LET path=path.subString(2,path.getLength()-1)
+    END IF
+  END IF
+  RETURN path
 END FUNCTION
