@@ -20,6 +20,7 @@ DEFINE _opt_ssh_args STRING
 DEFINE _opt_ssh_port STRING
 DEFINE _opt_fgltty STRING --if set we use fgltty instead of ssh
 DEFINE _opt_fgltty_pw STRING --fgltty password
+DEFINE _opt_fgltty_load STRING --fgltty load config
 CONSTANT ALLO = "Allocated port "
 CONSTANT MAXLINES = 10
 MAIN
@@ -43,7 +44,7 @@ END MAIN
 FUNCTION parseArgs()
   DEFINE gr mygetopt.GetoptR
   DEFINE o mygetopt.GetoptOptions
-  DEFINE opt_arg STRING
+  DEFINE opt_char, opt_arg, opt_name STRING
   DEFINE i, cnt INT
   DEFINE nullstr STRING
 
@@ -90,9 +91,15 @@ FUNCTION parseArgs()
   LET o[i].opt_char = "v"
   LET o[i].arg_type = mygetopt.NONE
 
+  LET i = o.getLength() + 1
+  LET o[i].name = "load"
+  LET o[i].description = "load a fgltty config"
+  LET o[i].arg_type = mygetopt.REQUIRED
+
   CALL mygetopt.initialize(gr, "fgljpssh", mygetopt.copyArguments(1), o)
   WHILE mygetopt.getopt(gr) == mygetopt.SUCCESS
     LET opt_arg = mygetopt.opt_arg(gr)
+    LET opt_char = mygetopt.opt_char(gr)
     CASE mygetopt.opt_char(gr)
       WHEN 'v'
         LET _verbose = TRUE
@@ -113,6 +120,16 @@ FUNCTION parseArgs()
         END IF
       WHEN 'x'
         LET _opt_fgltty_pw = opt_arg
+      OTHERWISE
+        IF opt_char IS NULL THEN
+          --LET o = mygetopt.options(gr)
+          LET opt_name = o[mygetopt.option_index(gr)].name
+          DISPLAY "Got long option ", opt_name
+          CASE opt_name
+            WHEN "load"
+              LET _opt_fgltty_load = opt_arg
+          END CASE
+        END IF
     END CASE
   END WHILE
   IF (cnt := mygetopt.getMoreArgumentCount(gr)) >= 1 THEN
@@ -268,27 +285,30 @@ FUNCTION start_fgltty(localPort INT)
   LET cmd = SFMT("%1 -P SSH ", quote(_opt_fgltty))
   CALL extract_user(_opt_ssh_host) RETURNING usr, host
   IF usr IS NOT NULL THEN
-    LET cmd = SFMT("%1 -u %2 ", cmd, usr)
+    LET cmd = SFMT("%1 -u %2", cmd, quote(usr))
   END IF
-  LET cmd = SFMT("%1 -H %2 ", cmd, host)
+  LET cmd = SFMT("%1 -H %2", cmd, quote(host))
   IF _opt_ssh_port IS NOT NULL THEN
-    LET cmd = SFMT("%1 -p %2 ", cmd, _opt_ssh_port)
+    LET cmd = SFMT("%1 -p %2", cmd, _opt_ssh_port)
   END IF
   IF _opt_fgltty_pw IS NOT NULL THEN
-    LET cmd = SFMT('%1 -x "%2" ', cmd, _opt_fgltty_pw)
+    LET cmd = SFMT('%1 -x %2', cmd, quote(_opt_fgltty_pw))
+  END IF
+  IF _opt_fgltty_load IS NOT NULL THEN
+    LET cmd = SFMT('%1 -load %2', cmd, quote(_opt_fgltty_load))
   END IF
   LET cmd = SFMT("%1 -apf %2", cmd, localPort)
   IF _opt_ssh_bash THEN
     LET cmd =
         SFMT('%1 -c "FGLSERVER=localhost:[_FGL_GDC_REAL_PORT_] bash -li"', cmd)
   ELSE
-    LET cmd = SFMT('%1 -c "%2"', _opt_ssh_args)
+    LET cmd = SFMT('%1 -c %2', quote(_opt_ssh_args))
   END IF
-  IF cmd.getCharAt(1)=='"' AND fgljp.isWin() THEN
+  IF cmd.getCharAt(1) == '"' AND fgljp.isWin() THEN
     --quote whole cmd again
-    LET cmd='"',cmd,'"'
+    LET cmd = '"', cmd, '"'
   END IF
-  DISPLAY "cmd:",cmd
+  DISPLAY "cmd:", cmd
   LET ch = base.Channel.create()
   CALL ch.openPipe(cmd, "r")
   WHILE (line := ch.readLine()) IS NOT NULL
@@ -410,24 +430,24 @@ FUNCTION kill(pid INT)
 END FUNCTION
 
 FUNCTION already_quoted(path)
-  DEFINE path,first,last STRING
-  LET first=NVL(path.getCharAt(1),"NULL")
-  LET last=NVL(path.getCharAt(path.getLength()),"NULL")
+  DEFINE path, first, last STRING
+  LET first = NVL(path.getCharAt(1), "NULL")
+  LET last = NVL(path.getCharAt(path.getLength()), "NULL")
   IF isWin() THEN
-    RETURN (first=='"' AND last=='"')
+    RETURN (first == '"' AND last == '"')
   END IF
-  RETURN (first=="'" AND last=="'") OR (first=='"' AND last=='"')
+  RETURN (first == "'" AND last == "'") OR (first == '"' AND last == '"')
 END FUNCTION
 
 FUNCTION quote(path)
   DEFINE path STRING
-  IF path.getIndexOf(" ",1)>0 THEN
+  IF path.getIndexOf(" ", 1) > 0 THEN
     IF NOT already_quoted(path) THEN
-      LET path='"',path,'"'
+      LET path = '"', path, '"'
     END IF
   ELSE
     IF already_quoted(path) AND isWin() THEN --remove quotes(Windows)
-      LET path=path.subString(2,path.getLength()-1)
+      LET path = path.subString(2, path.getLength() - 1)
     END IF
   END IF
   RETURN path
