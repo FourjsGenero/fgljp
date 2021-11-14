@@ -17,15 +17,22 @@ DEFINE _opt_tunnelonly BOOLEAN
 DEFINE _opt_ssh_bash BOOLEAN
 DEFINE _opt_ssh_host STRING
 DEFINE _opt_ssh_args STRING
+DEFINE _opt_ssh_port STRING
+DEFINE _opt_fgltty STRING --if set we use fgltty instead of ssh
+DEFINE _opt_fgltty_pw STRING --fgltty password
 CONSTANT ALLO = "Allocated port "
 CONSTANT MAXLINES = 10
 MAIN
   DEFINE entries fgljp.TStartEntries
   DEFINE tmp STRING
-  CALL fgl_setenv("FGLJPSSH_PARENT","1")
+  CALL fgl_setenv("FGLJPSSH_PARENT", "1")
   CALL parseArgs()
   CALL start_fgljp() RETURNING entries.*, tmp
-  CALL start_ssh(entries.port)
+  IF _opt_fgltty IS NOT NULL THEN
+    CALL start_fgltty(entries.port)
+  ELSE
+    CALL start_ssh(entries.port)
+  END IF
   IF os.Path.exists(tmp) THEN
     CALL kill(entries.pid)
     CALL os.Path.delete(tmp) RETURNING status
@@ -60,6 +67,24 @@ FUNCTION parseArgs()
   LET o[i].arg_type = mygetopt.NONE
 
   LET i = o.getLength() + 1
+  LET o[i].name = "port"
+  LET o[i].description = "remote ssh port number"
+  LET o[i].opt_char = "p"
+  LET o[i].arg_type = mygetopt.REQUIRED
+
+  LET i = o.getLength() + 1
+  LET o[i].name = "fgltty"
+  LET o[i].description = "use fgltty instead of ssh"
+  LET o[i].opt_char = "y"
+  LET o[i].arg_type = mygetopt.REQUIRED
+
+  LET i = o.getLength() + 1
+  LET o[i].name = "fgltty-password"
+  LET o[i].description = "clear text password for fgltty"
+  LET o[i].opt_char = "x"
+  LET o[i].arg_type = mygetopt.REQUIRED
+
+  LET i = o.getLength() + 1
   LET o[i].name = "verbose"
   LET o[i].description = "detailed log"
   LET o[i].opt_char = "v"
@@ -78,6 +103,16 @@ FUNCTION parseArgs()
         LET _opt_tunnelonly = TRUE
       WHEN 'b'
         LET _opt_ssh_bash = TRUE
+      WHEN 'p'
+        LET _opt_ssh_port = opt_arg
+      WHEN 'y'
+        LET _opt_fgltty = opt_arg
+        --small sanity check
+        IF NOT os.Path.exists(_opt_fgltty) THEN
+          CALL myErr(SFMT("fgltty not found at:%1", _opt_fgltty))
+        END IF
+      WHEN 'x'
+        LET _opt_fgltty_pw = opt_arg
     END CASE
   END WHILE
   IF (cnt := mygetopt.getMoreArgumentCount(gr)) >= 1 THEN
@@ -92,7 +127,12 @@ FUNCTION parseArgs()
   IF _opt_tunnelonly AND _opt_ssh_bash THEN
     CALL myErr("--tunnel-only(-t) and --bash(-b) options are exclusive")
   END IF
-  LET nullstr="0"
+  IF _opt_tunnelonly AND _opt_fgltty IS NOT NULL THEN
+    --not possible for now...fgltty is an interactive GUI program
+    --its of course up to you to leave it just open
+    CALL myErr("--tunnel-only(-t) and --fgltty(-y) options are exclusive")
+  END IF
+  LET nullstr = "0"
   IF _opt_tunnelonly AND NOT nullstr.equals(fgl_getenv("FGLGUI")) THEN
     CALL myErr("Please set FGLGUI=0 for --tunnel-only(-t)")
   END IF
@@ -187,16 +227,68 @@ FUNCTION start_fgljp() RETURNS(fgljp.TStartEntries, STRING)
   LET dir = os.Path.dirName(arg_val(0))
   LET fgljp_p = os.Path.join(dir, "fgljp.42m")
   LET tmp = fgljp.makeTempName()
-  LET cmd = sfmt("fglrun %1 > %2", fgljp_p, tmp)
+  LET cmd = SFMT("fglrun %1 > %2", fgljp_p, tmp)
   --windows: we need a separate console for fgljp to avoid Ctrl-c
   --affecting it, TODO: write a wrapper to hide the console window
-  LET cmd = IIF(fgljp.isWin(), sfmt('start cmd /c "%1"',cmd),cmd)
+  LET cmd = IIF(fgljp.isWin(), SFMT('start cmd /c "%1"', cmd), cmd)
   RUN cmd WITHOUT WAITING
   LET ch = waitOpen(tmp)
   LET line = waitReadLine(ch, tmp)
   DISPLAY "start_fgljp:", line
   CALL util.JSON.parse(line, entries)
   RETURN entries.*, tmp
+END FUNCTION
+
+FUNCTION extract_user(destination STRING) RETURNS(STRING, STRING)
+  DEFINE idx INT
+  DEFINE usr, usr_envname, trial, host STRING
+  LET idx = destination.getIndexOf("@", 1)
+  IF idx > 0 THEN
+    LET host = destination.subString(idx + 1, destination.getLength())
+    LET usr = destination.subString(1, idx - 1)
+  ELSE
+    LET usr_envname = IIF(fgljp.isWin(), "USERNAME", "USER")
+    LET trial = fgl_getenv(usr_envname)
+    LET usr = IIF(trial IS NOT NULL, trial, NULL)
+    IF usr IS NULL THEN
+      LET trial = fgl_getenv("LOGNAME")
+      LET usr = IIF(trial IS NOT NULL, trial, NULL)
+    END IF
+    LET host = destination
+  END IF
+  RETURN usr, host
+END FUNCTION
+
+FUNCTION start_fgltty(localPort INT)
+  DEFINE cmd, usr, host, line STRING
+  DEFINE ch base.Channel
+  LET cmd = SFMT("%1 -P SSH ", _opt_fgltty)
+  CALL extract_user(_opt_ssh_host) RETURNING usr, host
+  IF usr IS NOT NULL THEN
+    LET cmd = SFMT("%1 -u %2 ", cmd, usr)
+  END IF
+  LET cmd = SFMT("%1 -H %2 ", cmd, host)
+  IF _opt_ssh_port IS NOT NULL THEN
+    LET cmd = SFMT("%1 -p %2 ", cmd, _opt_ssh_port)
+  END IF
+  IF _opt_fgltty_pw IS NOT NULL THEN
+    LET cmd = SFMT('%1 -x "%2" ', cmd, _opt_fgltty_pw)
+  END IF
+  LET cmd = SFMT("%1 -apf %2", cmd, localPort)
+  IF _opt_ssh_bash THEN
+    LET cmd =
+        SFMT('%1 -c "FGLSERVER=localhost:[_FGL_GDC_REAL_PORT_] bash -li"', cmd)
+  ELSE
+    LET cmd = SFMT('%1 -c "%2"', _opt_ssh_args)
+  END IF
+  LET ch = base.Channel.create()
+  CALL ch.openPipe(cmd, "r")
+  WHILE (line := ch.readLine()) IS NOT NULL
+    IF _verbose THEN
+      DISPLAY "fgltty:", line
+    END IF
+  END WHILE
+  CALL ch.close()
 END FUNCTION
 
 FUNCTION start_ssh(localPort INT)
@@ -219,9 +311,12 @@ FUNCTION start_ssh(localPort INT)
     --case to start and read from the process...
     --furthermore the -4 (IPv4) flag is necessary to make the relay to localhost happen
     --note 'localhost' is much slower than '127.0.0.1' when forwarding
-    LET cmd =
-        SFMT('["ssh","-4","-N","-R","0:127.0.0.1:%1","%2"]',
-            localPort, _opt_ssh_host)
+    LET cmd = SFMT('["ssh","-4","-N","-R","0:127.0.0.1:%1"]', localPort)
+    IF _opt_ssh_port IS NOT NULL THEN
+      LET cmdarr[cmdarr.getLength() + 1] = "-p"
+      LET cmdarr[cmdarr.getLength() + 1] = _opt_ssh_port
+    END IF
+    LET cmdarr[cmdarr.getLength() + 1] = _opt_ssh_host
     CALL util.JSON.parse(cmd, cmdarr)
     CALL start_process(cmdarr) RETURNING line, proc
   ELSE
@@ -229,8 +324,10 @@ FUNCTION start_ssh(localPort INT)
     LET tmps = fgljp.makeTempName()
     LET tmps = tmps, "sock"
     LET cmd =
-        SFMT("ssh -f -N -M -S %1 -R 0:localhost:%2 %3 2>%4",
-            tmps, localPort, _opt_ssh_host, tmp)
+        IIF(_opt_ssh_port IS NOT NULL, SFMT("ssh -p %1", _opt_ssh_port), "ssh")
+    LET cmd =
+        SFMT("%1 -f -N -M -S %2 -R 0:localhost:%3 %4 2>%5",
+            cmd, tmps, localPort, _opt_ssh_host, tmp)
     RUN cmd WITHOUT WAITING
     LET ch = waitOpen(tmp)
     FOR i = 1 TO MAXLINES
@@ -259,6 +356,8 @@ FUNCTION start_ssh(localPort INT)
     IF _opt_ssh_bash THEN
       --make usage of the master control socket of possible (avoids re auth)
       LET cmd = IIF(fgljp.isWin(), "ssh -t", SFMT("ssh -t -S %1", tmps))
+      LET cmd =
+          IIF(_opt_ssh_port IS NULL, cmd, SFMT("%1 -p %2", cmd, _opt_ssh_port))
       --simply export FGLSERVER at the remote side
       LET cmd =
           SFMT("%1 %2 FGLSERVER=%3 bash -li", cmd, _opt_ssh_host, rFGLSERVER)
@@ -270,7 +369,12 @@ FUNCTION start_ssh(localPort INT)
           rFGLSERVER) --ssh Mac hack: the remote side has LC_FGLSERVER set without editing sshd_config
       --note: master control socket option not possible here because the env will not be passed again
       LET cmd =
-          SFMT("ssh -t -o SendEnv=FGLSERVER %1%2", _opt_ssh_host, _opt_ssh_args)
+          IIF(_opt_ssh_port IS NOT NULL,
+              SFMT("ssh -p %1", _opt_ssh_port),
+              "ssh")
+      LET cmd =
+          SFMT("%1 -t -o SendEnv=FGLSERVER %2%3",
+              cmd, _opt_ssh_host, _opt_ssh_args)
     END IF
     DISPLAY "cmd is:'", cmd, "'"
     RUN cmd
@@ -280,8 +384,10 @@ FUNCTION start_ssh(localPort INT)
     CALL proc.destroyForcibly()
   ELSE
     CALL ch.close()
+    LET cmd =
+        IIF(_opt_ssh_port IS NOT NULL, SFMT("ssh -p %1", _opt_ssh_port), "ssh")
     --close the master control connection
-    RUN SFMT("ssh -S %1 -O exit %2", tmps, _opt_ssh_host)
+    RUN SFMT("%1 -S %2 -O exit %3", cmd, tmps, _opt_ssh_host)
     CALL os.Path.delete(tmp) RETURNING status
     CALL os.Path.delete(tmps) RETURNING status
   END IF
