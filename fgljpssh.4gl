@@ -249,7 +249,7 @@ FUNCTION start_fgljp() RETURNS(fgljp.TStartEntries, STRING)
     --windows ssh: we need a separate console for fgljp to avoid Ctrl-c
     --affecting it, TODO: write a wrapper to hide the console window
     --not needed for fgltty
-    LET cmd = IIF(fgljp.isWin(), SFMT('start cmd /c "%1"', cmd), cmd)
+    LET cmd = IIF(fgljp.isWin(), SFMT('%1\\win\\whide cmd /c "%2"', os.Path.dirname(arg_val(0)), cmd), cmd)
   END IF
   RUN cmd WITHOUT WAITING
   LET ch = waitOpen(tmp)
@@ -340,12 +340,13 @@ FUNCTION start_ssh(localPort INT)
     --furthermore the -4 (IPv4) flag is necessary to make the relay to localhost happen
     --note 'localhost' is much slower than '127.0.0.1' when forwarding
     LET cmd = SFMT('["ssh","-4","-N","-R","0:127.0.0.1:%1"]', localPort)
+    CALL util.JSON.parse(cmd, cmdarr)
     IF _opt_ssh_port IS NOT NULL THEN
       LET cmdarr[cmdarr.getLength() + 1] = "-p"
       LET cmdarr[cmdarr.getLength() + 1] = _opt_ssh_port
     END IF
     LET cmdarr[cmdarr.getLength() + 1] = _opt_ssh_host
-    CALL util.JSON.parse(cmd, cmdarr)
+    --DISPLAY util.JSON.stringify(cmdarr)
     CALL start_process(cmdarr) RETURNING line, proc
   ELSE
     --compute a master control socket name
