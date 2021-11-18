@@ -204,14 +204,14 @@ PRIVATE FUNCTION expandArguments(
   DEFINE i INTEGER
   DEFINE argc INTEGER
   DEFINE arg STRING
-  DEFINE ch base.Channel
-  DEFINE fileName STRING
-  DEFINE ln STRING
+  --DEFINE ch base.Channel
+  --DEFINE fileName STRING
+  --DEFINE ln STRING
 
   LET argc = 0
   FOR i = 1 TO argv.getLength()
     LET arg = argv[i]
-    IF arg.subString(1, 1) == '@' THEN
+    {IF arg.subString(1, 1) == '@' THEN
       LET fileName = arg.subString(2, arg.getLength())
       IF NOT os.Path.exists(fileName) THEN
         DISPLAY SFMT("getopt: File %1 not found.", fileName)
@@ -227,10 +227,10 @@ PRIVATE FUNCTION expandArguments(
         END IF
       END WHILE
       CALL ch.close()
-    ELSE
-      LET argc = argc + 1
-      LET rv[argc] = argv[i]
-    END IF
+    ELSE}
+    LET argc = argc + 1
+    LET rv[argc] = argv[i]
+    {END IF}
   END FOR
 
   RETURN SUCCESS, rv

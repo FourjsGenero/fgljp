@@ -11,4 +11,4 @@ export FGLGUI=0
 #we recompile everything always: hence avoid version clashes
 make -C $FGLJPDIR clean_prog all > /dev/null
 export FGLJPDIR
-exec fglrun $FGLJPDIR/fgljpssh.42m "$@"
+exec fglrun $FGLJPDIR/fglssh.42m "$@"

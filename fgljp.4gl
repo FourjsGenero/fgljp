@@ -1874,12 +1874,15 @@ END FUNCTION
 
 --we need to correct encapsulation
 FUNCTION handleClientMeta(vmidx INT, meta STRING)
-  DEFINE ftreply, ftFC STRING
+  DEFINE ftreply, ftFC, feid2, mfeid2 STRING
   LET meta = replace(meta, '{encapsulation "0"}', '{encapsulation "1"}')
   --LET ftreply = IIF(_v[vmidx].FTV2, sfmt('{filetransfer "2"} {filetransferAppId "&app=%1"}',
   LET ftreply = IIF(_v[vmidx].FTV2, '{filetransfer "2"}', '{filetransfer "1"}')
   LET ftFC = IIF(_v[vmidx].FTFC, '{filetransferFC "1"}', "")
-  LET meta = replace(meta, '{filetransfer "0"}', SFMT('%1%2', ftreply, ftFC))
+  LET feid2 = fgl_getenv("_FGLFEID2")
+  LET mfeid2 = IIF(feid2 IS NOT NULL, SFMT('{frontEndID2 "%1"}', feid2), "")
+  LET meta =
+      replace(meta, '{filetransfer "0"}', SFMT('%1%2%3', ftreply, ftFC, mfeid2))
   --DISPLAY "handleClientMeta:", meta
   RETURN meta
 END FUNCTION
@@ -2214,13 +2217,21 @@ END FUNCTION
 
 FUNCTION handleVMMetaSel(c INT, line STRING)
   DEFINE pp, procIdWaiting, sessId, encaps, compression, rtver STRING
-  DEFINE ftV, ftFC STRING
+  DEFINE ftV, ftFC, feid, env_feid STRING
   DEFINE vmidx, ppidx, waitIdx INT
   DEFINE children TStringArr
   --allocate a new VM index
   LET vmidx = findFreeVMIdx()
   --DISPLAY "new vmidx:", vmidx
   CALL setEmptyVMConnection(vmidx)
+  LET feid = extractMetaVar(line, "frontEndID", FALSE)
+  LET env_feid = fgl_getenv("_FGLFEID")
+  IF env_feid IS NOT NULL AND NOT env_feid.equals(feid) THEN
+    CALL printStderr(
+        "Security alert:_FGLFEID doesn't match with the frontEndID of the VM, close connection.")
+    CALL closeSel(c)
+    RETURN -1
+  END IF
   LET _currIdx = -vmidx
   --assign matching members from _s to _v
   LET _v[vmidx].active = TRUE
@@ -2398,7 +2409,7 @@ FUNCTION handleConnection(key SelectionKey)
     LET _v[v].wait = FALSE
   END IF
   CALL handleConnectionInt(isVM, v, c, key, chan) RETURNING isVM, v, closed
-  IF isVM THEN
+  IF isVM AND v <> -1 THEN
     IF _v[v].didSendVMClose OR _v[v].state = S_FINISH THEN
       {
       IF _v[v].useSSE THEN
@@ -2588,6 +2599,9 @@ FUNCTION handleConnectionInt(
         CALL handleEmptyLine(isVM, v, c) RETURNING go_out, closed
       ELSE
         CALL handleLine(isVM, v, c, line) RETURNING go_out, isVM, v
+        IF v == -1 THEN
+          LET closed = TRUE --handleVMMetaSel did close (_FGLFEID)
+        END IF
       END IF
     END IF
   END WHILE
@@ -3392,6 +3406,7 @@ FUNCTION writeChannel(vmidx INT, buf ByteBuffer)
   DEFINE limit INT
   DEFINE didSetBlocking BOOLEAN
   LET limit = buf.limit()
+  MYASSERT(vmidx > 0 AND _v[vmidx].chan IS NOT NULL)
   IF NOT _v[vmidx].chan.isBlocking() THEN
     --DISPLAY "configureBlocking:",printV(vmidx)
     MYASSERT(_currIdx > 0)

@@ -1,12 +1,11 @@
-# fgljp
+# fgljp/fglssh
 Genero GAS like proxy to run GBC programs from the command line
 fgl (j)ava (p)roxy 
 Uses loads of IMPORT JAVA 
 
 # Motivation
 
-If you search an easy command line tool to run GBC in your desktop browser
-then fgljp is the right tool for you.
+If you search an easy command line tool to run GBC in your desktop browser then fgljp is the right tool for you.
 
 It is (almost) as easy as 
 ```
@@ -41,11 +40,12 @@ Obviously you need an fglrun on the *client* side to make fgljp working, but the
 By default fgljp listens on the loopback interface only.
 Only when starting with the -a argument it listens on the ANY interface (and you will very likely get firewall warnings then).
 
-To be able to work conveniently with remote hosts there is the fgljpssh command: it establishes a secure ssh tunnel to your fgl dev machine and exports FGLSERVER to the remote side.
+To be able to work conveniently with remote hosts there is the 'fglssh' command in this repository: it establishes a secure ssh tunnel to your Genero development machine and exports FGLSERVER to the remote side.
 
 Prerequisites:
 FGL >= 3.10
 JAVA >= 9
+on your desktop machine
 
 
 # How it works
@@ -93,3 +93,44 @@ possible BROWSER values: chrome,firefox,safari
 ```
 BROWSER=chrome && fgljp
 ```
+
+# fglssh
+
+fglssh is another small tool on top of fgljp which logs you in via ssh
+on your Genero development machine.
+It starts first fgljp in the background and exports FGLSERVER to the right value(by using auto portwarding) to be able to back connect to the fgljp running on your desktop.
+
+Using OpenSSH:
+
+If you have an OpenSSH client on your desktop machine installed (On Mac/Linux: preinstalled, Windows 10 or bigger: needs to be installed) and a bash on the remote side then invocation is pretty simple.
+
+```
+$ fglssh -b <your-genero-dev-machine>
+echo $FGLSERVER
+localhost:xxxxx
+fglrun <program>
+```
+The Genero/GBC program appears in you desktop browser using the remote side fglrun/GBC.
+Your remote side fglrun/fglcomp/GBC version doesn't need to match the one on your desktop, both are independent. The desktop side is only responsible for translating the protocol to the browser. The desktop's GBC (if present) isn't used at all.
+
+If you don't have a bash at the remote side you need to edit the server sides sshd\_config file to enable the transmission of the FGLSERVER and \_FGLFEID  environment variable.
+sshd\_config must contain a line
+```
+AcceptEnv FGLSERVER _FGLFEID _FGLFEID2
+```
+(You can have multiple AcceptEnv lines, see https://serverfault.com/questions/703315/how-configure-environment-variable-with-acceptenv)
+Restart your sshd after the change.
+$ fglssh <your-genero-dev-machine>
+should now export FGLSERVER to the environment regardless if bash,ash,ksh,csh or windows cmd is on the remote side
+If you use a cleartext password you need to enter it twice when you have a windows desktop, so better to have a public ssh key. 
+
+Using fgltty:
+fgltty is the helper ssh program delivered with the GDC and fglssh can use that too instead of an OpenSSH client
+
+```
+fglssh -y "c:\Program Files\FourJs\gdc3.20\bin\fgltty" -x <yourpassword> -b usr@<your-genero-dev-machine>
+```
+invokes first fgljp, then fgltty and opens up the graphical terminal window of fgltty you may know from GDC ssh direct shortcut configurations.
+If -b (or --bash) is used because bash is present remotely, FGLSERVER is automatically set and you have a login bash.
+
+In all other cases you need to use one of the known 'direct shortcut tags' described in tge GDC manual (see http://4js.com/online_documentation/fjs-gdc-manual-html/#gdc-topics/t_gdc_applications_shortcuts_creating_direct.html)

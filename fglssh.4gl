@@ -18,9 +18,12 @@ DEFINE _opt_ssh_bash BOOLEAN
 DEFINE _opt_ssh_host STRING
 DEFINE _opt_ssh_args STRING
 DEFINE _opt_ssh_port STRING
+DEFINE _opt_ssh_usr STRING
 DEFINE _opt_fgltty STRING --if set we use fgltty instead of ssh
 DEFINE _opt_fgltty_pw STRING --fgltty password
 DEFINE _opt_fgltty_load STRING --fgltty load config
+DEFINE _fglfeid, _fglfeid2 STRING
+DEFINE _remotePort INT
 CONSTANT ALLO = "Allocated port "
 CONSTANT MAXLINES = 10
 MAIN
@@ -28,6 +31,10 @@ MAIN
   DEFINE tmp STRING
   CALL fgl_setenv("FGLJPSSH_PARENT", "1")
   CALL parseArgs()
+  LET _fglfeid = fgljp.genSID()
+  CALL fgl_setenv("_FGLFEID", _fglfeid)
+  LET _fglfeid2 = fgljp.genSID()
+  CALL fgl_setenv("_FGLFEID2", _fglfeid2)
   CALL start_fgljp() RETURNING entries.*, tmp
   IF _opt_fgltty IS NOT NULL THEN
     CALL start_fgltty(entries.port)
@@ -38,7 +45,7 @@ MAIN
     CALL kill(entries.pid)
     CALL os.Path.delete(tmp) RETURNING status
   END IF
-  DISPLAY "fgljpssh terminated"
+  DISPLAY "fglssh terminated"
 END MAIN
 
 FUNCTION parseArgs()
@@ -74,6 +81,12 @@ FUNCTION parseArgs()
   LET o[i].arg_type = mygetopt.REQUIRED
 
   LET i = o.getLength() + 1
+  LET o[i].name = "login-name"
+  LET o[i].description = "remote ssh user"
+  LET o[i].opt_char = "l"
+  LET o[i].arg_type = mygetopt.REQUIRED
+
+  LET i = o.getLength() + 1
   LET o[i].name = "fgltty"
   LET o[i].description = "use fgltty instead of ssh"
   LET o[i].opt_char = "y"
@@ -96,7 +109,7 @@ FUNCTION parseArgs()
   LET o[i].description = "load a fgltty config"
   LET o[i].arg_type = mygetopt.REQUIRED
 
-  CALL mygetopt.initialize(gr, "fgljpssh", mygetopt.copyArguments(1), o)
+  CALL mygetopt.initialize(gr, "fglssh", mygetopt.copyArguments(1), o)
   WHILE mygetopt.getopt(gr) == mygetopt.SUCCESS
     LET opt_arg = mygetopt.opt_arg(gr)
     LET opt_char = mygetopt.opt_char(gr)
@@ -106,6 +119,8 @@ FUNCTION parseArgs()
       WHEN 'h'
         CALL mygetopt.displayUsage(gr, "<remote host> ?ssh_command?")
         EXIT PROGRAM 0
+      WHEN 'l'
+        LET _opt_ssh_usr = opt_arg
       WHEN 't'
         LET _opt_tunnelonly = TRUE
       WHEN 'b'
@@ -134,6 +149,7 @@ FUNCTION parseArgs()
   END WHILE
   IF (cnt := mygetopt.getMoreArgumentCount(gr)) >= 1 THEN
     FOR i = 1 TO cnt
+      DISPLAY "myopt count:", mygetopt.getMoreArgument(gr, i)
       IF i = 1 THEN
         LET _opt_ssh_host = mygetopt.getMoreArgument(gr, i)
       ELSE
@@ -249,7 +265,11 @@ FUNCTION start_fgljp() RETURNS(fgljp.TStartEntries, STRING)
     --windows ssh: we need a separate console for fgljp to avoid Ctrl-c
     --affecting it, TODO: write a wrapper to hide the console window
     --not needed for fgltty
-    LET cmd = IIF(fgljp.isWin(), SFMT('%1\\win\\whide cmd /c "%2"', os.Path.dirname(arg_val(0)), cmd), cmd)
+    LET cmd =
+        IIF(fgljp.isWin(),
+            SFMT('%1\\win\\whide cmd /c "%2"',
+                os.Path.dirName(arg_val(0)), cmd),
+            cmd)
   END IF
   RUN cmd WITHOUT WAITING
   LET ch = waitOpen(tmp)
@@ -259,28 +279,71 @@ FUNCTION start_fgljp() RETURNS(fgljp.TStartEntries, STRING)
   RETURN entries.*, tmp
 END FUNCTION
 
+FUNCTION getLocalUser()
+  DEFINE usr, usr_envname, trial STRING
+  LET usr_envname = IIF(fgljp.isWin(), "USERNAME", "USER")
+  LET trial = fgl_getenv(usr_envname)
+  LET usr = IIF(trial IS NOT NULL, trial, NULL)
+  IF usr IS NULL THEN
+    LET trial = fgl_getenv("LOGNAME")
+    LET usr = IIF(trial IS NOT NULL, trial, NULL)
+  END IF
+  RETURN usr
+END FUNCTION
+
 FUNCTION extract_user(destination STRING) RETURNS(STRING, STRING)
   DEFINE idx INT
-  DEFINE usr, usr_envname, trial, host STRING
+  DEFINE usr, host STRING
   LET idx = destination.getIndexOf("@", 1)
   IF idx > 0 THEN
     LET host = destination.subString(idx + 1, destination.getLength())
     LET usr = destination.subString(1, idx - 1)
   ELSE
-    LET usr_envname = IIF(fgljp.isWin(), "USERNAME", "USER")
-    LET trial = fgl_getenv(usr_envname)
-    LET usr = IIF(trial IS NOT NULL, trial, NULL)
-    IF usr IS NULL THEN
-      LET trial = fgl_getenv("LOGNAME")
-      LET usr = IIF(trial IS NOT NULL, trial, NULL)
+    IF _opt_ssh_usr IS NOT NULL THEN
+      LET usr = _opt_ssh_usr
+    ELSE
+      LET usr = getLocalUser()
     END IF
     LET host = destination
   END IF
   RETURN usr, host
 END FUNCTION
 
+FUNCTION replace_tags(cmds STRING, localPort INT) RETURNS STRING
+  CONSTANT AT_FGL =
+      "FGLSERVER=%1; export FGLSERVER; FGLGUI=1; export FGLGUI; _FGLFEID=%2; export _FGLFEID; _FGLFEID2=%3; export _FGLFEID2";
+  CONSTANT AT_FGLKSH =
+      'FGLSERVER="%1"; export FGLSERVER; FGLGUI=1; export FGLGUI; _FGLFEID="%2"; export _FGLFEID; _FGLFEID2="%3"; export _FGLFEID2'
+  CONSTANT AT_FGLNT =
+      "set FGLSERVER=%1&&set FGLGUI=1&&set _FGLFEID=%2&&set _FGLFEID2=%3";
+  CONSTANT AT_FGLCSH =
+      "setenv FGLSERVER %1&&setenv FGLGUI 1&&setenv _FGLFEID %2&&setenv _FGLFEID %3";
+  DEFINE at_fgl_s, at_fglnt_s, at_fglksh_s, at_fglcsh_s, rUser, host STRING
+  DEFINE rsvr, srvnum STRING
+  LET srvnum =
+      IIF(_opt_fgltty IS NOT NULL, "[_FGL_GDC_REAL_PORT_]", _remotePort - 6400)
+  LET rsvr = "localhost:", srvnum
+  LET at_fgl_s = SFMT(AT_FGL, rsvr, _fglfeid, _fglfeid2);
+  LET at_fglnt_s = SFMT(AT_FGLNT, rsvr, _fglfeid, _fglfeid2);
+  LET at_fglksh_s = SFMT(AT_FGLKSH, rsvr, _fglfeid, _fglfeid2);
+  LET at_fglcsh_s = SFMT(AT_FGLCSH, rsvr, _fglfeid, _fglfeid2);
+  LET cmds = search_and_replace_tag(cmds, "@FGL", at_fgl_s)
+  LET cmds = search_and_replace_tag(cmds, "@FGLNT", at_fglnt_s)
+  LET cmds = search_and_replace_tag(cmds, "@FGLKSH", at_fglksh_s)
+  LET cmds = search_and_replace_tag(cmds, "@FGLCSH", at_fglcsh_s)
+  LET cmds = search_and_replace_tag(cmds, "@SRVNUM", "[_FGL_GDC_REAL_PORT_]")
+  LET cmds = search_and_replace_tag(cmds, "@USR", getLocalUser())
+  LET cmds = search_and_replace_tag(cmds, "@FEID", _fglfeid)
+  LET cmds = search_and_replace_tag(cmds, "@FEID2", _fglfeid2)
+  LET cmds = search_and_replace_tag(cmds, "@E_SRV", "export FGLSERVER")
+  CALL extract_user(_opt_ssh_host) RETURNING rUser, host
+  LET cmds = search_and_replace_tag(cmds, "@USER", rUser)
+  LET cmds = search_and_replace_tag(cmds, "@PORT", SFMT("%1", localPort))
+  RETURN cmds
+END FUNCTION
+
 FUNCTION start_fgltty(localPort INT)
-  DEFINE cmd, usr, host, line STRING
+  DEFINE cmd, usr, host, line, cmds STRING
   DEFINE ch base.Channel
   LET cmd = SFMT("%1 -P SSH ", quote(_opt_fgltty))
   CALL extract_user(_opt_ssh_host) RETURNING usr, host
@@ -300,9 +363,11 @@ FUNCTION start_fgltty(localPort INT)
   LET cmd = SFMT("%1 -apf %2", cmd, localPort)
   IF _opt_ssh_bash THEN
     LET cmd =
-        SFMT('%1 -c "FGLSERVER=localhost:[_FGL_GDC_REAL_PORT_] bash -li"', cmd)
+        SFMT('%1 -c "FGLSERVER=localhost:[_FGL_GDC_REAL_PORT_] _FGLFEID=%2 _FGLFEID2=%3 bash -li"',
+            cmd, _fglfeid, _fglfeid2)
   ELSE
-    LET cmd = SFMT('%1 -c %2', quote(_opt_ssh_args))
+    LET cmds = replace_tags(_opt_ssh_args, localPort)
+    LET cmd = SFMT('%1 -c %2', cmd, quote(cmds))
   END IF
   IF cmd.getCharAt(1) == '"' AND fgljp.isWin() THEN
     --quote whole cmd again
@@ -322,7 +387,7 @@ END FUNCTION
 FUNCTION start_ssh(localPort INT)
   DEFINE tmp, tmps, line, cmd STRING
   DEFINE ch base.Channel
-  DEFINE idx, idx2, remotePort, aLen, i INT
+  DEFINE idx, idx2, aLen, i INT
   DEFINE rFGLSERVER STRING
   DEFINE cmdarr DYNAMIC ARRAY OF STRING
   DEFINE proc Process
@@ -372,9 +437,9 @@ FUNCTION start_ssh(localPort INT)
   DEFER INTERRUPT --prevent Ctrl-c bailing us out
   MYASSERT_MSG((idx := line.getIndexOf(ALLO, 1)) > 0, sfmt("Can't get allocated port out of '%1'", line))
   MYASSERT((idx2 := line.getIndexOf(" ", idx + aLen + 1)) > 0)
-  LET remotePort = line.subString(idx + aLen + 1, idx2 - 1)
-  MYASSERT(remotePort IS NOT NULL)
-  LET rFGLSERVER = SFMT("localhost:%1", remotePort - 6400)
+  LET _remotePort = line.subString(idx + aLen + 1, idx2 - 1)
+  MYASSERT(_remotePort IS NOT NULL)
+  LET rFGLSERVER = SFMT("localhost:%1", _remotePort - 6400)
   IF _opt_tunnelonly THEN
     DISPLAY "export FGLSERVER=", rFGLSERVER AT 3, 1
     MENU "Remote tunnel for fglrun active"
@@ -389,7 +454,8 @@ FUNCTION start_ssh(localPort INT)
           IIF(_opt_ssh_port IS NULL, cmd, SFMT("%1 -p %2", cmd, _opt_ssh_port))
       --simply export FGLSERVER at the remote side
       LET cmd =
-          SFMT("%1 %2 FGLSERVER=%3 bash -li", cmd, _opt_ssh_host, rFGLSERVER)
+          SFMT("%1 %2 FGLSERVER=%3 _FGLFEID=%4 _FGLFEID2=%5 bash -li",
+              cmd, _opt_ssh_host, rFGLSERVER, _fglfeid, _fglfeid2)
     ELSE
       --send FGLSERVER via -o SendEnv -> AcceptEnv entry in sshd_config is needed
       CALL fgl_setenv("FGLSERVER", rFGLSERVER)
@@ -402,8 +468,8 @@ FUNCTION start_ssh(localPort INT)
               SFMT("ssh -p %1", _opt_ssh_port),
               "ssh")
       LET cmd =
-          SFMT("%1 -t -o SendEnv=FGLSERVER %2%3",
-              cmd, _opt_ssh_host, _opt_ssh_args)
+          SFMT("%1 -t -o SendEnv=FGLSERVER -o SendEnv=_FGLFEID -o SendEnv=_FGLFEID2 %2 %3",
+              cmd, _opt_ssh_host, quote(replace_tags(_opt_ssh_args, localPort)))
     END IF
     DISPLAY "cmd is:'", cmd, "'"
     RUN cmd
@@ -452,4 +518,77 @@ FUNCTION quote(path)
     END IF
   END IF
   RETURN path
+END FUNCTION
+
+FUNCTION search_and_replace_tag(src, srch_search, srch_replace) RETURNS STRING
+  DEFINE src, srch_search, srch_replace STRING
+  DEFINE idx INT
+  DEFINE found BOOLEAN
+  CALL search_tag(src, 1, srch_search) RETURNING found, idx
+  IF found THEN
+    LET src = replace_tag(src, idx, srch_search, srch_replace)
+  END IF
+  RETURN src
+END FUNCTION
+
+FUNCTION replace_tag(src, start, srch_search, srch_replace) RETURNS STRING
+  DEFINE src, srch_search, srch_replace STRING
+  DEFINE start INT
+  DEFINE end INT
+  LET end = start + srch_search.getLength()
+  LET src =
+      src.subString(1, start - 1),
+      srch_replace,
+      src.subString(end, src.getLength())
+  RETURN src
+END FUNCTION
+
+--checks if the given character is a delimiter character
+FUNCTION isDelimiterChar(ch)
+  DEFINE ch, delimiters STRING
+  DEFINE idx INTEGER
+  IF ch IS NULL THEN
+    RETURN 1
+  END IF
+  LET delimiters = " \t()[]{}:,;.?!\"'-+/*=&%$^:#~|@\n\r"
+  LET idx = delimiters.getIndexOf(ch, 1)
+  RETURN idx <> 0
+END FUNCTION
+
+--returns if the search string was found and the position
+FUNCTION search_tag(txt, startpos, srch_search) RETURNS(BOOLEAN, INT)
+  DEFINE txt, srch_search STRING
+  DEFINE startpos INT
+  DEFINE found BOOLEAN
+  DEFINE idxfound INT
+  DEFINE leftChar, rightChar STRING
+  CONSTANT AT_SIGN = "@"
+
+  LET idxfound = txt.getIndexOf(srch_search, startpos)
+  {DISPLAY "int_search :",
+      srch_search,
+      ",startpos:",
+      startpos,
+      ",textlen:",
+      txt.getLength(),
+      ",idxfound:",
+      idxfound}
+  LET found = idxfound <> 0
+  IF found THEN
+    --check if there are delimiters at the left or the right
+    IF idxfound > 1 THEN
+      LET leftChar = txt.getCharAt(idxfound - 1)
+      IF NOT AT_SIGN.equals(txt.getCharAt(idxfound))
+          AND NOT isDelimiterChar(leftChar) THEN
+        LET found = FALSE
+      END IF
+    END IF
+    IF found AND idxfound + srch_search.getLength() <= txt.getLength() THEN
+      LET rightChar = txt.getCharAt(idxfound + srch_search.getLength())
+      IF NOT isDelimiterChar(rightChar) THEN
+        LET found = FALSE
+      END IF
+    END IF
+  END IF -- found
+  RETURN found, idxfound
 END FUNCTION

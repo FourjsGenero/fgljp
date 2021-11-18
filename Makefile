@@ -8,7 +8,7 @@
 	fglform -M $<
 
 
-all: fgljp.42m mygetopt.42m runonserver.42m getgdcpath.42m fgljpssh.42m
+all: fgljp.42m mygetopt.42m runonserver.42m getgdcpath.42m fglssh.42m
 
 demo: fgljp.42m demo.42m demo.42f
 #	./fgljp -v demo.42m a b
@@ -37,7 +37,7 @@ format:
 	rm -f *.4gl~
 	fglcomp -M --format --fo-inplace mygetopt.4gl
 	fglcomp -M --format --fo-inplace fgljp.4gl
-	fglcomp -M --format --fo-inplace fgljpssh.4gl
+	fglcomp -M --format --fo-inplace fglssh.4gl
 	fglcomp -M --format --fo-inplace demo.4gl
 
 clean_prog:

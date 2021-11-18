@@ -19,5 +19,5 @@ fglcomp -M -r -Wall fgljpssh.4gl
 IF %errorlevel% NEQ 0 GOTO myend
 popd
 %MYDRIVE%
-fglrun %FGLJPDIR%\fgljpssh.42m %*
+fglrun %FGLJPDIR%\fglssh.42m %*
 :myend
