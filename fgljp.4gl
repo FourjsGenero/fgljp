@@ -284,7 +284,7 @@ MAIN
   --'localhost' is sloow with Chrome/Edge on Windows
   --probably due to IPv6 probing
   LET _localhost = IIF(isWin(), "127.0.0.1", "localhost")
-  LET _sidCookie = genSID()
+  LET _sidCookie = genSID(FALSE)
   IF _opt_clearcache THEN
     CALL clearCache()
   END IF
@@ -2166,7 +2166,8 @@ END FUNCTION
 FUNCTION extractMetaVar(line STRING, varname STRING, forceFind BOOLEAN)
   DEFINE valueIdx1, valueIdx2 INT
   DEFINE value STRING
-  CALL extractMetaVarSub(line, varname, forceFind)
+  CALL extractMetaVarSub(
+      line, varname, forceFind)
       RETURNING value, valueIdx1, valueIdx2
   RETURN value
 END FUNCTION
@@ -2174,7 +2175,8 @@ END FUNCTION
 FUNCTION patchProcId(line STRING, procId STRING)
   DEFINE valueIdx1, valueIdx2 INT
   DEFINE value STRING
-  CALL extractMetaVarSub(line, "procId", TRUE)
+  CALL extractMetaVarSub(
+      line, "procId", TRUE)
       RETURNING value, valueIdx1, valueIdx2
   LET line =
       line.subString(1, valueIdx1 - 1),
@@ -2925,7 +2927,8 @@ FUNCTION handleMultiPartUpload(
       IF prev IS NOT NULL THEN
         --merge the previous array in to be able to
         --check for the boundary
-        CALL merge2BA(ba, prev, baRead, blen, MAXB)
+        CALL merge2BA(
+            ba, prev, baRead, blen, MAXB)
             RETURNING ba, prev, baRead, startidx
       ELSE
         MYASSERT(baRead < MAXB)
@@ -2957,7 +2960,8 @@ FUNCTION handleMultiPartUpload(
       --buf is completely full or we need to repeat until full
       IF maxToRead == 0 THEN
         MYASSERT(prev IS NOT NULL)
-        CALL merge2BA(ba, prev, baRead, blen, MAXB)
+        CALL merge2BA(
+            ba, prev, baRead, blen, MAXB)
             RETURNING ba, prev, baRead, startidx
         GOTO testboundary
       END IF
@@ -5077,13 +5081,15 @@ FUNCTION nodeDesc(n om.DomNode)
   RETURN sb.toString()
 END FUNCTION
 
-FUNCTION genSID()
+FUNCTION genSID(short BOOLEAN)
   DEFINE rand SecureRandom
   DEFINE barr MyByteArray
   DEFINE enc Encoder
   DEFINE s STRING
+  DEFINE numdigits INT
   LET rand = SecureRandom.create()
-  LET barr = MyByteArray.create(25)
+  LET numdigits = IIF(short, 20, 25)
+  LET barr = MyByteArray.create(numdigits)
   CALL rand.nextBytes(barr);
   LET enc = Base64.getUrlEncoder().withoutPadding();
   LET s = enc.encodeToString(barr);

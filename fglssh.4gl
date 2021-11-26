@@ -31,9 +31,9 @@ MAIN
   DEFINE tmp STRING
   CALL fgl_setenv("FGLJPSSH_PARENT", "1")
   CALL parseArgs()
-  LET _fglfeid = fgljp.genSID()
+  LET _fglfeid = fgljp.genSID(TRUE)
   CALL fgl_setenv("_FGLFEID", _fglfeid)
-  LET _fglfeid2 = fgljp.genSID()
+  LET _fglfeid2 = fgljp.genSID(TRUE)
   CALL fgl_setenv("_FGLFEID2", _fglfeid2)
   CALL start_fgljp() RETURNING entries.*, tmp
   IF _opt_fgltty IS NOT NULL THEN
@@ -169,6 +169,7 @@ FUNCTION parseArgs()
   IF _opt_tunnelonly AND NOT nullstr.equals(fgl_getenv("FGLGUI")) THEN
     CALL myErr("Please set FGLGUI=0 for --tunnel-only(-t)")
   END IF
+  OPTIONS MESSAGE LINE 3
   IF _opt_ssh_host IS NULL OR _opt_ssh_host.getLength() == 0 THEN
     CALL mygetopt.displayUsage(gr, "<remote host> ?ssh_command?")
     EXIT PROGRAM 1
@@ -441,11 +442,7 @@ FUNCTION start_ssh(localPort INT)
   MYASSERT(_remotePort IS NOT NULL)
   LET rFGLSERVER = SFMT("localhost:%1", _remotePort - 6400)
   IF _opt_tunnelonly THEN
-    DISPLAY "export FGLSERVER=", rFGLSERVER AT 3, 1
-    MENU "Remote tunnel for fglrun active"
-      COMMAND "Exit"
-        EXIT MENU
-    END MENU
+    CALL menu_tunnelonly(rFGLSERVER)
   ELSE
     IF _opt_ssh_bash THEN
       --make usage of the master control socket of possible (avoids re auth)
@@ -467,6 +464,7 @@ FUNCTION start_ssh(localPort INT)
           IIF(_opt_ssh_port IS NOT NULL,
               SFMT("ssh -p %1", _opt_ssh_port),
               "ssh")
+      DISPLAY "_opt_ssh_args:", _opt_ssh_args
       LET cmd =
           SFMT("%1 -t -o SendEnv=FGLSERVER -o SendEnv=_FGLFEID -o SendEnv=_FGLFEID2 %2 %3",
               cmd, _opt_ssh_host, quote(replace_tags(_opt_ssh_args, localPort)))
@@ -486,6 +484,62 @@ FUNCTION start_ssh(localPort INT)
     CALL os.Path.delete(tmp) RETURNING status
     CALL os.Path.delete(tmps) RETURNING status
   END IF
+END FUNCTION
+
+FUNCTION copy2clip(txt STRING)
+  DEFINE c base.Channel
+  LET c = base.Channel.create()
+  CALL c.setDelimiter("")
+  CASE
+    WHEN isWin()
+      CALL c.openPipe("clip", "w")
+    WHEN fgljp.isMac()
+      CALL c.openPipe("pbcopy", "w")
+    OTHERWISE
+      CALL c.openPipe("xclip -selection c", "w")
+  END CASE
+  CALL c.write(txt)
+  CALL c.close()
+END FUNCTION
+
+FUNCTION menu_tunnelonly(rFGLSERVER STRING)
+  DEFINE cmd, cmdb1, cmdb2, cmdnt1, cmdnt2, cmdc1, cmdc2 STRING
+  --DISPLAY "1         2         3         4         5         6         7         8         " AT 3,1
+
+  --DISPLAY "01234567890123456789012345678901234567890123456789012345678901234567890123456789" AT 4,1
+  DISPLAY "bash:" AT 4, 1
+  LET cmdb1 =
+      SFMT('export FGLSERVER=%1;export _FGLFEID=%2;', rFGLSERVER, _fglfeid)
+  DISPLAY cmdb1 AT 5, 1
+  LET cmdb2 = SFMT('export _FGLFEID2=%1;', _fglfeid2)
+  DISPLAY cmdb2 AT 6, 1
+  DISPLAY "cmd:" AT 8, 1
+  LET cmdnt1 = SFMT("set FGLSERVER=%1&&set _FGLFEID=%2", rFGLSERVER, _fglfeid)
+  DISPLAY cmdnt1 AT 9, 1
+  LET cmdnt2 = SFMT("set _FGLFEID2=%1", _fglfeid2)
+  DISPLAY cmdnt2 AT 10, 1
+  DISPLAY "csh:" AT 12, 1
+  LET cmdc1 =
+      SFMT("setenv FGLSERVER=%1&&setenv _FGLFEID=%2", rFGLSERVER, _fglfeid)
+  DISPLAY cmdc1 AT 13, 1
+  LET cmdc2 = SFMT("setenv _FGLFEID2=%1", _fglfeid2)
+  DISPLAY cmdc2 AT 14, 1
+  MENU "Remote tunnel for fglrun active"
+    COMMAND "Bash" "Copies the environment for bash hosts to clipboard"
+      LET cmd = SFMT("%1%2", cmdb1, cmdb2)
+      CALL copy2clip(cmd)
+      MESSAGE "did copy environment for bash" ATTRIBUTE(RED)
+    COMMAND "Windows" "Copies the environment for Windows hosts to clipboard"
+      LET cmd = SFMT("%1&&%2", cmdnt1, cmdnt2)
+      CALL copy2clip(cmd)
+      MESSAGE "did copy environment for Windows" ATTRIBUTE(RED)
+    COMMAND "Csh" "Copies the environment for CSH hosts to clipboard"
+      LET cmd = SFMT("%1&&%2", cmdc1, cmdc2)
+      CALL copy2clip(cmd)
+      MESSAGE "did copy environment for CSH" ATTRIBUTE(RED)
+    COMMAND "Exit" "Exits and closes the tunnel"
+      EXIT MENU
+  END MENU
 END FUNCTION
 
 FUNCTION kill(pid INT)
@@ -550,7 +604,7 @@ FUNCTION isDelimiterChar(ch)
   IF ch IS NULL THEN
     RETURN 1
   END IF
-  LET delimiters = " \t()[]{}:,;.?!\"'-+/*=&%$^:#~|@\n\r"
+  LET delimiters = " \t()<>[]{}:,;.?!\"'-+/*=&%$^:#~|@\n\r"
   LET idx = delimiters.getIndexOf(ch, 1)
   RETURN idx <> 0
 END FUNCTION
