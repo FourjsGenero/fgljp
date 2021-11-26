@@ -40,11 +40,12 @@ Obviously you need an fglrun on the *client* side to make fgljp working, but the
 By default fgljp listens on the loopback interface only.
 Only when starting with the -a argument it listens on the ANY interface (and you will very likely get firewall warnings then).
 
-To be able to work conveniently with remote hosts there is the 'fglssh' command in this repository: it establishes a secure ssh tunnel to your Genero development machine and exports FGLSERVER to the remote side.
+To be able to work conveniently with remote hosts there is the `fglssh` command in this repository: it establishes a secure ssh tunnel to your Genero development machine and exports FGLSERVER to the remote side.
 
 Prerequisites:
 FGL >= 3.10
 JAVA >= 9
+(Linux: xdg-open in addition)
 on your desktop machine
 
 
