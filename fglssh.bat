@@ -15,7 +15,7 @@ fglcomp -M -r -Wall mygetopt.4gl
 IF %errorlevel% NEQ 0 GOTO myend
 fglcomp -M -r -Wall fgljp.4gl
 IF %errorlevel% NEQ 0 GOTO myend
-fglcomp -M -r -Wall fgljpssh.4gl
+fglcomp -M -r -Wall fglssh.4gl
 IF %errorlevel% NEQ 0 GOTO myend
 popd
 %MYDRIVE%
