@@ -120,7 +120,11 @@ AcceptEnv FGLSERVER _FGLFEID _FGLFEID2
 ```
 (You can have multiple AcceptEnv lines, see https://serverfault.com/questions/703315/how-configure-environment-variable-with-acceptenv)
 Restart your sshd after the change.
-$ fglssh <your-genero-dev-machine>
+(Linux: too much variants, google it)
+(Mac: `sudo launchctl stop sshd&&launchctl start sshd`)
+(Windows: `powershell -Command "& {Stop-Service sshd;Start-Service sshd}"`)
+
+`$ fglssh <your-genero-dev-machine>`
 should now export FGLSERVER to the environment regardless if bash,ash,ksh,csh or windows cmd is on the remote side
 If you use a cleartext password you need to enter it twice when you have a windows desktop, so better to have a public ssh key. 
 
