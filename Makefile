@@ -40,13 +40,21 @@ test/wait_for_fgljp_start.42m:
 #starts the demo in file transfer mode in one rush
 demoft: fgljp.42m demo.42m demo.42f test/wait_for_fgljp_start.42m
 	rm -f demoft.txt
+ifdef WINDIR
+	cmd /c start $(FGLJP) --startfile demoft.txt -X
+else
 	$(FGLJP) --startfile demoft.txt -X &
+endif
 	cd test&&fglrun wait_for_fgljp_start ../demoft.txt&&cd ..
 	fglrun demo.42m a b
 
 fgldeb_demo: fgljp.42m fgldeb demo.42m demo.42f test/wait_for_fgljp_start.42m
 	rm -f demoft.txt
+ifdef WINDIR
+	cmd /c start $(FGLJP) --startfile demoft.txt -X
+else
 	$(FGLJP) --startfile demoft.txt -X &
+endif
 	cd test&&fglrun wait_for_fgljp_start ../demoft.txt&&cd ..
 	$(call _path,fgldeb/fgldeb) demo a b
 
@@ -76,6 +84,10 @@ clean_prog:
 clean: clean_prog
 	rm -f *.42? *.4gl~
 	rm -rf priv cacheFT
+	$(MAKE) -C test clean
+
+distclean: clean
+	rm -rf fgldeb
 
 echo:
 	echo "fgljp:$(FGLJP)"
