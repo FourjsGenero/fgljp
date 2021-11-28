@@ -302,7 +302,7 @@ console.log("gbc_fgljp begin");
       sess.addServerFeatures(["ft-lock-file"]);
       var UCName=(_proto==2)? o.content.UCName : o.UCName;
       var UCVersion =(_proto==2)? o.content.UCVersion : o.UCVersion;
-      var meta='meta Client{{name "GDC"} {UCName "'+UCName+'"} {version "'+UCVersion+'"} {host "browser"} {encapsulation "0"} {filetransfer "0"}}\n';
+      var meta='meta Client{{name "GBC"} {UCName "'+UCName+'"} {version "'+UCVersion+'"} {host "browser"} {encapsulation "0"} {filetransfer "0"}}\n';
       myassert(_sessId!=null);
       mylog("meta:",meta);
       _procIds.set(o.procId,_lastMeta);
