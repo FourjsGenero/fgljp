@@ -1,4 +1,4 @@
-#GNU and nmake compatible
+#GNU make
 .SUFFIXES: .4gl .42m .per .42f
 
 .4gl.42m:
@@ -7,12 +7,32 @@
 .per.42f:
 	fglform -M $<
 
+ifdef windir
+WINDIR=$(windir)
+endif
+ifdef WINDIR
+SLEEP=timeout
+FGLJP=fgljp
+define _path
+$(subst /,\,$(1))
+endef
+
+else
+
+SLEEP=sleep
+FGLJP=./fgljp
+define _path
+$(1)
+endef
+
+endif
+
 
 all: fgljp.42m mygetopt.42m runonserver.42m getgdcpath.42m fglssh.42m
 
 demo: fgljp.42m demo.42m demo.42f
 #	./fgljp -v demo.42m a b
-	./fgljp demo.42m a b
+	$(FGLJP) demo.42m a b
 
 test/wait_for_fgljp_start.42m:
 	make -C test
@@ -20,15 +40,25 @@ test/wait_for_fgljp_start.42m:
 #starts the demo in file transfer mode in one rush
 demoft: fgljp.42m demo.42m demo.42f test/wait_for_fgljp_start.42m
 	rm -f demoft.txt
-	./fgljp --startfile demoft.txt -X &
+	$(FGLJP) --startfile demoft.txt -X &
 	cd test&&fglrun wait_for_fgljp_start ../demoft.txt&&cd ..
 	fglrun demo.42m a b
+
+fgldeb_demo: fgljp.42m fgldeb demo.42m demo.42f test/wait_for_fgljp_start.42m
+	rm -f demoft.txt
+	$(FGLJP) --startfile demoft.txt -X &
+	cd test&&fglrun wait_for_fgljp_start ../demoft.txt&&cd ..
+	$(call _path,fgldeb/fgldeb) demo a b
+
+fgldeb:
+	git clone https://github.com/FourjsGenero/tool_fgldeb fgldeb
+	make -C fgldeb
 
 rundemo: demo.42m demo.42f
 	fglrun demo.42m a b
 
 demogmi: fgljp.42m demo.42m demo.42f
-	./fgljp -r demo.42m a b
+	$(FGLJP) -r demo.42m a b
 
 demogdc: fgljp.42m demo.42m demo.42f
 	GDC=1 ./fgljp -v -g demo.42m a b
@@ -46,5 +76,8 @@ clean_prog:
 clean: clean_prog
 	rm -f *.42? *.4gl~
 	rm -rf priv cacheFT
+
+echo:
+	echo "fgljp:$(FGLJP)"
 
 dist: all 
