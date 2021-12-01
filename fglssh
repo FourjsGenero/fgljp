@@ -8,7 +8,10 @@ FGLJPDIR=`dirname $SCRIPT_NAME`
 export FGL_LENGTH_SEMANTICS=BYTE
 export LC_ALL="en_US.UTF-8"
 export FGLGUI=0
-#we recompile everything always: hence avoid version clashes
-make -C $FGLJPDIR clean_prog all > /dev/null
+#recompile only when needed
+source "$FGLJPDIR/myfglcomp.sh"
+myfglcomp mygetopt > /dev/null
+myfglcomp fgljp > /dev/null
+myfglcomp fglssh > /dev/null
 export FGLJPDIR
 exec fglrun $FGLJPDIR/fglssh.42m "$@"

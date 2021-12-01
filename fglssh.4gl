@@ -137,9 +137,8 @@ FUNCTION parseArgs()
         LET _opt_fgltty_pw = opt_arg
       OTHERWISE
         IF opt_char IS NULL THEN
-          --LET o = mygetopt.options(gr)
           LET opt_name = o[mygetopt.option_index(gr)].name
-          DISPLAY "Got long option ", opt_name
+          --DISPLAY "Got long option ", opt_name
           CASE opt_name
             WHEN "load"
               LET _opt_fgltty_load = opt_arg
@@ -149,7 +148,7 @@ FUNCTION parseArgs()
   END WHILE
   IF (cnt := mygetopt.getMoreArgumentCount(gr)) >= 1 THEN
     FOR i = 1 TO cnt
-      DISPLAY "myopt count:", mygetopt.getMoreArgument(gr, i)
+      --DISPLAY "myopt count:", mygetopt.getMoreArgument(gr, i)
       IF i = 1 THEN
         LET _opt_ssh_host = mygetopt.getMoreArgument(gr, i)
       ELSE
@@ -464,7 +463,7 @@ FUNCTION start_ssh(localPort INT)
           IIF(_opt_ssh_port IS NOT NULL,
               SFMT("ssh -p %1", _opt_ssh_port),
               "ssh")
-      DISPLAY "_opt_ssh_args:", _opt_ssh_args
+      --DISPLAY "_opt_ssh_args:", _opt_ssh_args
       LET cmd =
           SFMT("%1 -t -o SendEnv=FGLSERVER -o SendEnv=_FGLFEID -o SendEnv=_FGLFEID2 %2 %3",
               cmd, _opt_ssh_host, quote(replace_tags(_opt_ssh_args, localPort)))

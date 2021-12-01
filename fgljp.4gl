@@ -466,7 +466,8 @@ FUNCTION printKeys(what STRING, keys Set)
 END FUNCTION
 
 FUNCTION setup_program(priv STRING, pub STRING, port INT)
-  DEFINE s STRING
+  DEFINE s, arg1, cmd, fglrun STRING
+  DEFINE code INT
   LET _progdir = os.Path.fullPath(os.Path.dirName(_opt_program1))
   LET _pubdir = _progdir
   LET _privdir = os.Path.join(_progdir, "priv")
@@ -481,8 +482,15 @@ FUNCTION setup_program(priv STRING, pub STRING, port INT)
   --CALL fgl_setenv("FGLGUIDEBUG", "1")
   --should work on both Win and Unix
   --LET s= "cd ",_progdir,"&&fglrun ",os.Path.baseName(prog)
-  LET s = SFMT("fglrun %1", _opt_program)
-  CALL log(SFMT("RUN:%1 WITHOUT WAITING", s))
+  LET arg1 = os.Path.fullPath(_opt_program1.trim())
+  LET cmd = "fglrun -r ", quote(arg1), IIF(isWin(), ">NUL", " >/dev/null 2>&1")
+  --we check if we can deassemble the file, this works for .42m and .42r
+  --DISPLAY "cmd:",cmd
+  RUN cmd RETURNING code
+  --if code is set the 1st arg is not a valid .42m or .42r
+  LET fglrun = IIF(code, "", "fglrun ")
+  LET s = SFMT("%1%2", fglrun, _opt_program)
+  CALL log(SFMT("RUN:'%1' WITHOUT WAITING", s))
   RUN s WITHOUT WAITING
 END FUNCTION
 
