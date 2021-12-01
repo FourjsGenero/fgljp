@@ -139,3 +139,7 @@ invokes first fgljp, then fgltty and opens up the graphical terminal window of f
 If -b (or --bash) is used because bash is present remotely, FGLSERVER is automatically set and you have a login bash.
 
 In all other cases you need to use one of the known 'direct shortcut tags' described in tge GDC manual (see http://4js.com/online_documentation/fjs-gdc-manual-html/#gdc-topics/t_gdc_applications_shortcuts_creating_direct.html)
+
+# Known problems
+Currently its impossible to terminate fgljp with Control-c in the windows console (see FGL issue FGL-5697).
+One needs to use `taskkill /f /im fglrun.exe` currently to terminat the process.
