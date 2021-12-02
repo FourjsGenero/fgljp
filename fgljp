@@ -5,12 +5,16 @@ realpath() {
 
 SCRIPT_NAME=`realpath $0`
 FGLJPDIR=`dirname $SCRIPT_NAME` 
+#echo "FGLJPDIR=$FGLJPDIR"
 export FGL_LENGTH_SEMANTICS=BYTE
 export LC_ALL="en_US.UTF-8"
+pushd "`pwd`" >/dev/null
+cd "$FGLJPDIR"
 #recompile only when needed
 source "$FGLJPDIR/myfglcomp.sh"
 myfglcomp mygetopt
 myfglcomp fgljp
+popd > /dev/null
 export FGLJPDIR
 #exec fglrun -p $FGLJPDIR/fgljp.42m "$@"
-exec fglrun $FGLJPDIR/fgljp.42m "$@"
+exec fglrun "$FGLJPDIR/fgljp.42m" "$@"
