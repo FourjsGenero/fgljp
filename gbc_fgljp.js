@@ -18,11 +18,15 @@ console.log("gbc_fgljp begin");
   var urlog=function(s){};
   var mylog=function(s){};
   var tryJSONs=function(data){};
-  var _debug=true;
+  var _debug=false;
   var _fcd_timer=null;
   var _sse_timer=null;
   var _empty_trials=0; //number of attempts to get SSE events if we have no procIds
   var _isGBC4 = true;
+  var _gbcMajor = 1;
+  var _gbcMinor = 0;
+  var _gbcPatchLevel = 0;
+  var _gbcMinor_PL = ""; //Minor + patchLevel
   var _procIds = new Map;
   var _lastMeta = null;
   if (_debug) {
@@ -31,7 +35,7 @@ console.log("gbc_fgljp begin");
       //alert(s.replace(/"/g, "'"));
     }
     mylog=function(s) {
-      //console.log(s);
+      console.log(s);
     }
     tryJSONs=function( data ) {
       if (typeof data == "object" ) {
@@ -51,7 +55,7 @@ console.log("gbc_fgljp begin");
   checkQueryParams();
   function myalert(txt) {
     console.log("alert:"+txt);
-    alert(txt);
+    //alert(txt);
   }
   function myassert(expr,txt) {
     if (expr===false) {
@@ -87,13 +91,17 @@ console.log("gbc_fgljp begin");
     const node0=getNode(0,app);
     return node0.attribute("name");
   }
-  function raiseProcId(procId) {
+  function getNavMan() {
     var sess=getCurrentSession();
     var nav=sess.getNavigationManager();
+    return nav;
+  }
+  function raiseProcId(procId) {
+    var nav=getNavMan();
     try {
       nav.__raiseProcId(procId);
     } catch(err) {
-      alert("raiseProcId: "+err.message);
+      myalert("raiseProcId: "+err.message);
     }
   }
   function appFromProcId(procId) {
@@ -103,7 +111,7 @@ console.log("gbc_fgljp begin");
     try {
       app=nav.__appFromProcId(procId);
     } catch(err) {
-      alert("appFromProcId: "+err.message);
+      myalert("appFromProcId: "+err.message);
     }
     return app;
   }
@@ -151,7 +159,7 @@ console.log("gbc_fgljp begin");
       }
     } else {
       if (_useSSE) {
-        alert("getAJAXAnswer: unwanted responseText:"+responseText);
+        myalert("getAJAXAnswer: unwanted responseText:"+responseText);
         return;
       }
       /* following the 'classic' GAS protocol */
@@ -224,43 +232,40 @@ console.log("gbc_fgljp begin");
     _procId=null;
   }
 
-  function addFrontCalls() {
-    if (!_isGBC4) {
-      return; //no debugger frontcalls for now
-    }
-    window.gbc.FrontCallService.modules.debugger = {
+  function addDebuggerFrontCalls(gbc) {
+    gbc.FrontCallService.modules.debugger = {
       setactivewindow: function(procId) {
         var prev=getProcId();
         var prevAppName=getAppName();
         const anchorNode = this.getAnchorNode();
         const thisApp = anchorNode.getApplication();
         const thisProcId = getProcId(thisApp);
-        console.log("setactivewindow:"+procId+",prev:"+prev+",prev appname:"+prevAppName);
+        mylog("setactivewindow:"+procId+",prev:"+prev+",prev appname:"+prevAppName);
         if (procId=="current") {
           procId = thisProcId;
-          console.log("  set procId to:"+thisProcId);
+          mylog("  set procId to:"+thisProcId);
         }
         if (procId == prev) {
-          console.log(" 1no switch needed");
+          mylog(" 1no switch needed");
           clearTimeout(_fcd_timer);
           _fcd_timer=null;
         } else {
           if (_fcd_timer) {
-            console.log("  _fcd_timer already set:"+_fcd_timer);
+            mylog("  _fcd_timer already set:"+_fcd_timer);
           }
           _fcd_timer=setTimeout(function() {
             const curr=getProcId();
-            console.log("setactivewindow timer: curr:"+curr+",procId:"+procId);
+            mylog("setactivewindow timer: curr:"+curr+",procId:"+procId);
             if (curr!=procId) {    
               if (curr==thisProcId && thisProcId!=procId && 
                 isInteractive(thisApp)) {
-                console.log("keep debugger on top");
+                mylog("keep debugger on top");
               } else {
-                console.log("raiseProcId:"+procId);
+                mylog("raiseProcId:"+procId);
                 raiseProcId(procId);
               }
             } else {
-              console.log(" 2no switch needed");
+              mylog(" 2no switch needed");
             }
           }, 300);
         }
@@ -269,7 +274,7 @@ console.log("gbc_fgljp begin");
       getactivewindow: function() {
         //should return the name/procId of the current(topmost) app
         const procId = getProcId();
-        console.log("getactivewindow:"+procId+",app:"+getAppName());
+        mylog("getactivewindow:"+procId+",app:"+getAppName());
         return [procId];
       },
       getcurrentwindow: function() {
@@ -278,10 +283,14 @@ console.log("gbc_fgljp begin");
          const thisApp = anchorNode.getApplication()
          const procId = getProcId(thisApp);
          const appName = getAppName(thisApp);
-         console.log("getcurrentwindow gets procId:"+procId+",name:"+appName);
+         mylog("getcurrentwindow gets procId:"+procId+",name:"+appName);
          return [procId];
       }
     };
+    fgljp.setactivewindow=window.gbc.FrontCallService.modules.debugger.setactivewindow;
+    fgljp.getactivewindow=window.gbc.FrontCallService.modules.debugger.getactivewindow;
+    fgljp.getcurrentwindow=window.gbc.FrontCallService.modules.debugger.getcurrentwindow;
+   
   }
   function myMeta(meta) {
     mylog("myMeta:"+meta);
@@ -297,7 +306,7 @@ console.log("gbc_fgljp begin");
   function emitReady(metaobj) {
     //called by GBC
     window.gbcWrapper.URReady = function(o) {
-      console.log("URREADY:"+JSON.stringify(o));
+      mylog("URREADY:"+JSON.stringify(o));
       var sess=getCurrentSession();
       sess.addServerFeatures(["ft-lock-file"]);
       var UCName=(_proto==2)? o.content.UCName : o.UCName;
@@ -381,7 +390,7 @@ console.log("gbc_fgljp begin");
       return true;
     }
     window.gbcWrapper.frontcall = function(data, callback) {
-      console.log("[gURAPI debug] frontcall(" + data + ") "+ callback);
+      mylog("[gURAPI debug] frontcall(" + data + ") "+ callback);
       window._fc_callback=callback;
     };
     //not used for now
@@ -456,7 +465,7 @@ console.log("gbc_fgljp begin");
       mylog("SSE meta:'"+typeof e.data+","+e.data+"',id:"+procId);
       var data=String(e.data);
       if (_procIds.has(procId)) {
-        alert("  same procId coming in"+procId+",close old one");
+        myalert("  same procId coming in"+procId+",close old one");
         emit_rn0(procId);
       }
       reAddSource(url,false);
@@ -482,7 +491,7 @@ console.log("gbc_fgljp begin");
     source.addEventListener('error', function(e) {
        mylog("err readyState:"+e.target.readyState);
        if (e.target.readyState == EventSource.CLOSED) {
-         console.log("EventSource closed");
+         mylog("EventSource closed");
        }
        mylog(" close SSE due to an error(server not reachable)");
        closeSource();
@@ -500,7 +509,7 @@ console.log("gbc_fgljp begin");
     closeSource();
     clearTimeout(_sse_timer);
     _sse_timer=null;
-    if (false && checkProcIds && _procIds.size==0) {
+    /*if (false && checkProcIds && _procIds.size==0) {
         _sse_timer=setTimeout(function() {
           if (_empty_trials<10) {
             _empty_trials++;
@@ -512,15 +521,24 @@ console.log("gbc_fgljp begin");
           addEventSource(url);
         }, 1000);
         mylog("did set up _sse_timer:"+_sse_timer);
-    } else { //reset the counter
+    } else { //reset the counter */
       mylog("clear sse_timer")
       _empty_trials=0;
       addEventSource(url);
-    }
+    /*}*/
   }
-  function addGBCPatchesInt(gbc) {
+  function addGBCPatchesInt(gbc,haveDebuggerFCs) {
     var gbcP=Object.getPrototypeOf(gbc);
     var classes=gbcP.classes;
+    //if ((!_isGBC4) || (_isGBC4 && _gbcMinor_PL<"00.05")) {
+      patchWrapResourcePath(classes); //workaround GBC-3240,GBC-3105
+    //}
+    if (_isGBC4 && !haveDebuggerFCs) {
+      patchNavMan(classes); //add some helpers
+    }
+  }
+
+  function patchWrapResourcePath(classes) {
     var VMApplicationP = classes.VMApplication.prototype;
     //wrapResourcePath should mask non conform path symbols such as \ or :
     VMApplicationP.wrapResourcePath = function(path, nativePrefix, browserPrefix) {
@@ -538,15 +556,14 @@ console.log("gbc_fgljp begin");
       //console.log("returnPath:"+returnPath);
       return returnPath;
     }
-    if (_isGBC4) {
+  }
+
+  function patchNavMan(classes) {
     var navP = classes.VMSessionNavigationManager.prototype;
     navP.__appFromProcId=function(procId) {
-       const appId = this._stackCurrentApplication.get(procId);
-       let app = this._applicationLookupByProcId.get(appId);
-       if (!app) {
-          const stack = this._applicationStacks.get(procId);
-          app = this._applicationLookupByProcId.get(stack[stack.length - 1])
-       }
+       let app = this._applicationLookupByProcId.get(procId);
+       //var name = app ? getAppName(app) : "(null)";
+       //console.log("__appFromProcId for procId:"+procId+",name:"+name); 
        return app;
     }
     navP.__raiseProcId=function(procId) {
@@ -558,8 +575,9 @@ console.log("gbc_fgljp begin");
          app.getUI().syncCurrentWindow();
        }
     }
-    }
-    /*
+  }
+  /*
+  function patchSidebar(classes) {
     var hSideP = classes.ApplicationHostSidebarWidget.prototype;
     hSideP.isAlwaysVisible=function() { //avoid the disturbing sidebar to steal place
       mylog("isAlwaysVisible");
@@ -591,14 +609,17 @@ console.log("gbc_fgljp begin");
       mylog("getSideBarwidth2");
       return 0;
     }
-    */
   }
+  */
   function addGBCPatches(gbc) {
     try {
-      addGBCPatchesInt(gbc);
-      addFrontCalls();
+      var haveDebuggerFCs=!!gbc.FrontCallService.modules.debugger;
+      addGBCPatchesInt(gbc,haveDebuggerFCs);
+      if (_isGBC4 && !haveDebuggerFCs) {
+        addDebuggerFrontCalls(gbc);
+      }
     } catch (err) {
-      alert("addGBCPatches:"+err.message);
+      myalert("addGBCPatches:"+err.message);
     }
   }
   function startWrapper() {
@@ -612,16 +633,34 @@ console.log("gbc_fgljp begin");
     fgljp.getCurrentApp=getCurrentApp;
     fgljp.getNode=getNode;
     fgljp.getProcId=getProcId;
+    fgljp.getNavMan=getNavMan;
     fgljp.raiseProcId=raiseProcId;
   }
   window.gbc.ThemeService.setValue("theme-sidebar-max-width","100000px");
-  _isGBC4= parseFloat(window.gbc.version)>=4.0;
+  var ver=window.gbc.version;
+  _isGBC4= parseFloat(ver)>=4.0;
+  var firstDot= ver.indexOf(".");
+  myassert(firstDot>=0);
+  _gbcMajor = parseInt(ver.substring(0,firstDot));
+  var last = ver.lastIndexOf(".");
+  if (firstDot < last) {
+    var sub = ver.substring(firstDot+1,last);
+    _gbcMinor = parseInt(sub);
+    var slice= ver.slice( - (ver.length - last - 1 ));
+    _gbcPatchLevel = parseInt(slice);
+    _gbcMinor_PL=sub+"."+slice;
+  } else {
+    var sub = ver.substring(firstDot+1);
+    _gbcMinor = parseInt(sub);
+  }
+  //alert("_gbcMajor:"+_gbcMajor+",_gbcMinor:"+_gbcMinor+",_gbcPatchLevel:"+_gbcPatchLeve+"_gbcMinor_PL:"+_gbcMinor_PL);
+  
   if (_isBrowser) {
     window.__gbcDefer = function (start) {//only called in "browser" mode by GBC
       mylog("__gbcDefer called in browser mode,_useSSE:"+_useSSE+",start:"+start);
       mylog("gbc ver:"+window.gbc.version+",_isGBC4:"+_isGBC4);
       if (_useSSE) {
-        alert("_useSSE active, not possible to be set in browser mode");
+        myalert("_useSSE active, not possible to be set in browser mode");
         return;
       }
       addGBCPatches(window.gbc);
