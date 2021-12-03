@@ -2641,10 +2641,7 @@ FUNCTION readEncaps(vmidx INT)
     LET err = err_get(status)
     --DISPLAY "err:'",err,"'"
     IF err.equals("Java exception thrown: java.io.EOFException.\n")
-        OR err.getIndexOf(
-                "Java exception thrown: java.io.IOException: Connection reset",
-                1)
-            > 0 THEN
+        OR err.getIndexOf("Exception: Connection reset", 1) > 0 THEN
       --DISPLAY "!!!readEncaps EOF!!!"
       RETURN TAuiData, ""
     END IF
