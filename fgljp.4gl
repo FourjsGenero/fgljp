@@ -3719,6 +3719,60 @@ FUNCTION winQuoteUrl(url STRING) RETURNS STRING
   RETURN url
 END FUNCTION
 
+FUNCTION getMacChromeCmd(url STRING)
+  CONSTANT CHROME = "Google Chrome"
+  DEFINE cmd STRING
+  IF fgl_getenv("KIOSK") IS NOT NULL THEN
+    LET cmd =
+        SFMT("open -n -a %1 --args '--app=%2' '--force-devtools-available'",
+            quote(CHROME), url)
+  ELSE
+    LET cmd = SFMT("open -a %1  '%2'", quote(CHROME), url)
+  END IF
+  RETURN cmd
+END FUNCTION
+
+--see https://stackoverflow.com/questions/32458095/how-can-i-get-the-default-browser-name-in-bash-script-on-mac-os-x
+FUNCTION getMacDefaultBrowser()
+  CONSTANT PBUDDY = "/usr/libexec/PlistBuddy"
+  DEFINE plist, cmd, result, err, browser STRING
+  DEFINE cnt, lastDot INT
+  LET browser = "none"
+  LET plist =
+      os.Path.join(
+          fgl_getenv("HOME"),
+          "Library/Preferences/com.apple.LaunchServices/com.apple.launchservices.secure.plist")
+  IF NOT os.Path.exists(plist) THEN
+    RETURN browser
+  END IF
+  WHILE TRUE
+    LET cmd =
+        SFMT('%1 -c "Print LSHandlers:%2:LSHandlerURLScheme" %3',
+            PBUDDY, cnt, quote(plist))
+    CALL getProgramOutputInt(cmd) RETURNING result, err
+    IF err IS NOT NULL THEN
+      DISPLAY SFMT("Can't run:%1,err:%2", cmd, err)
+      EXIT WHILE
+    END IF
+    IF result == "http" OR result == "https" THEN
+      LET cmd =
+          SFMT('%1 -c "Print LSHandlers:%2:LSHandlerRoleAll" %3',
+              PBUDDY, cnt, quote(plist))
+      CALL getProgramOutputInt(cmd) RETURNING result, err
+      IF err IS NULL THEN
+        --cut last entry from "com.apple.safari" or "com.google.chrome"
+        LET lastDot = lastIndexOf(result, ".")
+        IF lastDot > 0 THEN
+          LET browser = result.subString(lastDot + 1, result.getLength())
+        END IF
+      END IF
+      EXIT WHILE
+    END IF
+    LET cnt = cnt + 1
+  END WHILE
+  RETURN browser
+END FUNCTION
+
 FUNCTION openBrowser(url)
   DEFINE url, cmd, browser, pre, lbrowser STRING
   CALL log(SFMT("openBrowser url:%1", url))
@@ -3741,10 +3795,11 @@ FUNCTION openBrowser(url)
       END IF
       CASE
         WHEN isMac() AND browser <> "./gdcm.app/Contents/MacOS/gdcm"
-          IF browser == "chrome" THEN
-            LET browser = "Google Chrome"
+          IF browser == "chrome" OR browser == "Google Chrome" THEN
+            LET cmd = getMacChromeCmd(url)
+          ELSE
+            LET cmd = SFMT("open -a %1 '%2'", quote(browser), url)
           END IF
-          LET cmd = SFMT("open -a %1 '%2'", quote(browser), url)
         WHEN isWin()
           LET lbrowser = browser.toLowerCase()
           --no path separator and no .exe given: we use start
@@ -3766,7 +3821,11 @@ FUNCTION openBrowser(url)
         WHEN isWin()
           LET cmd = SFMT("start %1", winQuoteUrl(url))
         WHEN isMac()
-          LET cmd = SFMT("open '%1'", url)
+          IF getMacDefaultBrowser() == "chrome" THEN
+            LET cmd = getMacChromeCmd(url)
+          ELSE
+            LET cmd = SFMT("open '%1'", url)
+          END IF
         OTHERWISE --assume kinda linux
           LET cmd = SFMT("xdg-open '%1'", url)
       END CASE
@@ -3794,8 +3853,17 @@ FUNCTION isMacInt()
   RETURN FALSE
 END FUNCTION
 
-FUNCTION getProgramOutput(cmd) RETURNS STRING
-  DEFINE cmd, cmdOrig, tmpName, errStr STRING
+FUNCTION getProgramOutput(cmd STRING) RETURNS STRING
+  DEFINE result, err STRING
+  CALL getProgramOutputInt(cmd) RETURNING result, err
+  IF err IS NOT NULL THEN
+    CALL myErr(SFMT("failed to RUN:%1%2", cmd, err))
+  END IF
+  RETURN result
+END FUNCTION
+
+FUNCTION getProgramOutputInt(cmd STRING) RETURNS(STRING, STRING)
+  DEFINE cmdOrig, tmpName, errStr STRING
   DEFINE txt TEXT
   DEFINE ret STRING
   DEFINE code INT
@@ -3812,7 +3880,6 @@ FUNCTION getProgramOutput(cmd) RETURNS STRING
   IF code THEN
     LET errStr = ",\n  output:", ret
     CALL os.Path.delete(tmpName) RETURNING code
-    CALL myErr(SFMT("failed to RUN:%1%2", cmdOrig, errStr))
   ELSE
     --remove \r\n
     IF ret.getCharAt(ret.getLength()) == "\n" THEN
@@ -3822,7 +3889,7 @@ FUNCTION getProgramOutput(cmd) RETURNS STRING
       LET ret = ret.subString(1, ret.getLength() - 1)
     END IF
   END IF
-  RETURN ret
+  RETURN ret, errStr
 END FUNCTION
 
 #+computes a temporary file name
