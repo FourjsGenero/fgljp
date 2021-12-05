@@ -228,6 +228,7 @@ DEFINE _opt_gdc BOOLEAN
 DEFINE _opt_runonserver BOOLEAN
 DEFINE _opt_nostart BOOLEAN
 DEFINE _opt_clearcache BOOLEAN
+DEFINE _opt_kiosk_mode BOOLEAN
 DEFINE _logChan base.Channel
 DEFINE _opt_program, _opt_program1 STRING
 DEFINE _verbose BOOLEAN
@@ -284,6 +285,7 @@ MAIN
   --'localhost' is sloow with Chrome/Edge on Windows
   --probably due to IPv6 probing
   LET _localhost = IIF(isWin(), "127.0.0.1", "localhost")
+  LET _opt_kiosk_mode=fgl_getenv("KIOSK") IS NOT NULL
   LET _sidCookie = genSID(FALSE)
   IF _opt_clearcache THEN
     CALL clearCache()
@@ -3724,12 +3726,21 @@ FUNCTION getMacChromeCmd(url STRING)
   DEFINE cmd STRING
   IF fgl_getenv("KIOSK") IS NOT NULL THEN
     LET cmd =
-        SFMT("open -n -a %1 --args '--app=%2' '--force-devtools-available'",
+        SFMT("open -n -a %1 --args '--app=%2' '--force-devtools-available' '--no-default-browser-check'",
             quote(CHROME), url)
   ELSE
     LET cmd = SFMT("open -a %1  '%2'", quote(CHROME), url)
   END IF
   RETURN cmd
+END FUNCTION
+
+FUNCTION getWinEdgeChromeCmd(browser STRING,url STRING)
+  LET browser=IIF(browser=="edge","msedge",browser)
+  IF _opt_kiosk_mode THEN
+    RETURN sfmt("start %1 --new-window --app=%2",browser,winQuoteUrl(url))
+  ELSE
+    RETURN sfmt("start %1 %2",browser,winQuoteUrl(url))
+  END IF
 END FUNCTION
 
 --see https://stackoverflow.com/questions/32458095/how-can-i-get-the-default-browser-name-in-bash-script-on-mac-os-x
@@ -3749,7 +3760,7 @@ FUNCTION getMacDefaultBrowser()
     LET cmd =
         SFMT('%1 -c "Print LSHandlers:%2:LSHandlerURLScheme" %3',
             PBUDDY, cnt, quote(plist))
-    CALL getProgramOutputInt(cmd) RETURNING result, err
+    CALL getProgramOutputWithErr(cmd) RETURNING result, err
     IF err IS NOT NULL THEN
       DISPLAY SFMT("Can't run:%1,err:%2", cmd, err)
       EXIT WHILE
@@ -3758,7 +3769,7 @@ FUNCTION getMacDefaultBrowser()
       LET cmd =
           SFMT('%1 -c "Print LSHandlers:%2:LSHandlerRoleAll" %3',
               PBUDDY, cnt, quote(plist))
-      CALL getProgramOutputInt(cmd) RETURNING result, err
+      CALL getProgramOutputWithErr(cmd) RETURNING result, err
       IF err IS NULL THEN
         --cut last entry from "com.apple.safari" or "com.google.chrome"
         LET lastDot = lastIndexOf(result, ".")
@@ -3773,8 +3784,76 @@ FUNCTION getMacDefaultBrowser()
   RETURN browser
 END FUNCTION
 
+FUNCTION trimWhiteSpace(s STRING)
+  LET s=s.trim()
+  LET s=replace(s,"\n","")
+  LET s=replace(s,"\r","")
+  RETURN s
+END FUNCTION
+
+FUNCTION trimWhiteSpaceAndLower(s STRING)
+  LET s=trimWhiteSpace(s)
+  LET s=s.toLowerCase()
+  RETURN s
+END FUNCTION
+
+FUNCTION getWinDefaultBrowser() RETURNS STRING
+  DEFINE cmd, res,err, ext STRING
+  DEFINE sz_idx, q_idx1, q_idx2 INT
+  DEFINE success BOOLEAN
+  --first try Windows 10
+  LET cmd="reg query HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Windows\\Shell\\Associations\\URLAssociations\\http\\UserChoice /v ProgID"
+  CALL getProgramOutputWithErr(cmd) RETURNING res, err
+  IF err IS NULL THEN
+    LET sz_idx=res.getIndexOf("REG_SZ",1)
+    IF sz_idx>0 THEN
+      LET res=res.subString(sz_idx+6,res.getLength())
+      LET res=trimWhiteSpaceAndLower(res)
+      LET success=TRUE
+    END IF
+  ELSE --older Windows
+    LET cmd="reg query HKEY_CLASSES_ROOT\\http\\shell\\open\\command /ve"
+    CALL getProgramOutputWithErr(cmd) RETURNING res, err
+    IF err IS NULL THEN
+      LET sz_idx=res.getIndexOf("REG_SZ",1)
+      IF sz_idx>0 THEN
+        LET res=res.subString(sz_idx+6,res.getLength())
+        --remove '"' from the path
+        --it's something like '"C:\Program Files\Microsoft\Edge\Application\msedge.exe"' ...
+        LET q_idx1=res.getIndexOf('"',1)
+        IF q_idx1>0 THEN
+          LET q_idx2=res.getIndexOf('"',q_idx1+1)
+          IF q_idx2>0 THEN
+            LET res=res.subString(q_idx1+1,q_idx2-1)
+            LET res=os.Path.baseName(res)
+            LET ext=os.Path.extension(res)
+            IF ext IS NOT NULL THEN
+              LET res=res.subString(1,res.getLength()-ext.getLength()-1)
+            END IF
+            LET res=res.toLowerCase()
+            --and the wanted result would be "msedge"
+            LET success=TRUE
+          END IF
+        END IF
+      END IF
+    END IF
+  END IF
+  CALL log(sfmt("getWinDefaultBrowser res:'%1',success:%2",res,success))
+  CASE
+     WHEN NOT success
+       RETURN "none"
+     WHEN res.getIndexOf("firefox",1)>0
+       RETURN "firefox"
+     WHEN res.getIndexOf("msedge",1)>0
+       RETURN "edge"
+     WHEN res.getIndexOf("chrome",1)>0
+       RETURN "chrome"
+  END CASE
+  RETURN res
+END FUNCTION
+
 FUNCTION openBrowser(url)
-  DEFINE url, cmd, browser, pre, lbrowser STRING
+  DEFINE url, cmd, browser, pre, lbrowser, defbrowser STRING
   CALL log(SFMT("openBrowser url:%1", url))
   IF fgl_getenv("SLAVE") IS NOT NULL THEN
     CALL log("gdcm SLAVE set,return")
@@ -3805,21 +3884,29 @@ FUNCTION openBrowser(url)
           --no path separator and no .exe given: we use start
           IF browser.getIndexOf("\\", 1) == 0
               AND lbrowser.getIndexOf(".exe", 1) == 0 THEN
-            IF browser == "edge" THEN
-              LET browser = "start"
-              LET url = "microsoft-edge:", url
-            ELSE
+            CASE
+              WHEN (browser=="edge" OR browser=="msedge" OR browser=="chrome")
+                LET cmd=getWinEdgeChromeCmd(browser,url)
+              OTHERWISE
               LET pre = "start "
-            END IF
+            END CASE
           END IF
-          LET cmd = SFMT('%1%2 %3', pre, quote(browser), winQuoteUrl(url))
+          IF cmd IS NULL THEN
+            LET cmd = SFMT('%1%2 %3', pre, quote(browser), winQuoteUrl(url))
+          END IF
         OTHERWISE --Unix
           LET cmd = SFMT("%1 '%2'", quote(browser), url)
       END CASE
-    OTHERWISE
+    OTHERWISE --standard browser
       CASE
         WHEN isWin()
-          LET cmd = SFMT("start %1", winQuoteUrl(url))
+          LET defbrowser=getWinDefaultBrowser()
+          CASE
+            WHEN defbrowser=="edge" OR defbrowser=="chrome"
+              LET cmd=getWinEdgeChromeCmd(defbrowser,url)
+            OTHERWISE
+              LET cmd = SFMT("start %1", winQuoteUrl(url))
+          END CASE
         WHEN isMac()
           IF getMacDefaultBrowser() == "chrome" THEN
             LET cmd = getMacChromeCmd(url)
@@ -3855,19 +3942,18 @@ END FUNCTION
 
 FUNCTION getProgramOutput(cmd STRING) RETURNS STRING
   DEFINE result, err STRING
-  CALL getProgramOutputInt(cmd) RETURNING result, err
+  CALL getProgramOutputWithErr(cmd) RETURNING result, err
   IF err IS NOT NULL THEN
     CALL myErr(SFMT("failed to RUN:%1%2", cmd, err))
   END IF
   RETURN result
 END FUNCTION
 
-FUNCTION getProgramOutputInt(cmd STRING) RETURNS(STRING, STRING)
+FUNCTION getProgramOutputWithErr(cmd STRING) RETURNS(STRING, STRING)
   DEFINE cmdOrig, tmpName, errStr STRING
   DEFINE txt TEXT
   DEFINE ret STRING
   DEFINE code INT
-  --DISPLAY "RUN cmd:", cmd
   LET cmdOrig = cmd
   LET tmpName = makeTempName()
   LET cmd = cmd, ">", tmpName, " 2>&1"
