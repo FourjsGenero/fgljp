@@ -20,11 +20,10 @@ MAIN
       CALL testProcessing()
     COMMAND "sub"
       CALL sub()
-    ON ACTION message ATTRIBUTE(IMAGE = "smiley", TEXT = "Message")
+    ON ACTION message ATTRIBUTE(IMAGE = "smiley", TEXT = "Message+DISPLAY")
       LET num = num + 1
       MESSAGE SFMT("TEST%1", num)
-      --ON IDLE 10
-      --  MESSAGE "IDLE"
+      DISPLAY SFMT("TEST%1", num)
     COMMAND "10 frontcalls"
       CALL fc10()
     COMMAND "debugger frontcall"
