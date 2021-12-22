@@ -260,10 +260,10 @@ FUNCTION start_fgljp() RETURNS(fgljp.TStartEntries, STRING)
   LET dir = os.Path.dirName(arg_val(0))
   LET fgljp_p = os.Path.join(dir, "fgljp.42m")
   LET tmp = fgljp.makeTempName()
-  LET cmd = SFMT("fglrun %1 > %2", fgljp_p, tmp)
+  LET cmd = SFMT("fglrun %1 > %2 2>&1", fgljp_p, tmp)
   IF _opt_fgltty IS NULL THEN
     --windows ssh: we need a separate console for fgljp to avoid Ctrl-c
-    --affecting it, TODO: write a wrapper to hide the console window
+    --affecting it, the mini whide.exe hides the extra console window
     --not needed for fgltty
     LET cmd =
         IIF(fgljp.isWin(),
