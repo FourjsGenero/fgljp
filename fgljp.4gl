@@ -4,60 +4,55 @@ SHORT CIRCUIT
 &define MYASSERT(x) IF NOT NVL(x,0) THEN CALL myErr("ASSERTION failed in line:"||__LINE__||":"||#x) END IF
 &define MYASSERT_MSG(x,msg) IF NOT NVL(x,0) THEN CALL myErr("ASSERTION failed in line:"||__LINE__||":"||#x||","||msg) END IF
 &define UNUSED_VAR(variable) IF (variable) IS NULL THEN END IF
+&define NO_JAVA
 IMPORT os
 IMPORT util
 IMPORT FGL mygetopt
 --IMPORT JAVA com.fourjs.fgl.lang.FglRecord
-IMPORT JAVA org.w3c.dom.Document
+--IMPORT JAVA org.w3c.dom.Document
 IMPORT JAVA java.time.LocalDateTime
 IMPORT JAVA java.time.ZoneOffset
 IMPORT JAVA java.time.Instant
-IMPORT JAVA java.io.File
-IMPORT JAVA java.io.FileInputStream
-IMPORT JAVA java.io.FileOutputStream
-IMPORT JAVA java.io.DataInputStream
-IMPORT JAVA java.io.DataOutputStream
-IMPORT JAVA java.io.IOException
-IMPORT JAVA java.io.InputStream
-IMPORT JAVA java.io.InputStreamReader
-IMPORT JAVA java.io.BufferedReader
-IMPORT JAVA java.io.ByteArrayOutputStream
-IMPORT JAVA java.nio.channels.SelectionKey
-IMPORT JAVA java.nio.channels.Selector
-IMPORT JAVA java.nio.channels.ServerSocketChannel
-IMPORT JAVA java.nio.channels.SocketChannel
-IMPORT JAVA java.nio.channels.FileChannel
-IMPORT JAVA java.nio.channels.Channels
+--IMPORT JAVA java.io.InputStreamReader
+--IMPORT JAVA java.io.BufferedReader
 IMPORT JAVA java.nio.file.Files
 IMPORT JAVA java.nio.file.Path
 IMPORT JAVA java.nio.file.Paths
 IMPORT JAVA java.nio.file.LinkOption
 IMPORT JAVA java.nio.file.attribute.FileTime
-IMPORT JAVA java.nio.ByteOrder
-IMPORT JAVA java.nio.ByteBuffer
-IMPORT JAVA java.nio.CharBuffer
+IMPORT JAVA java.net.URI
+&ifndef NO_JAVA
 IMPORT JAVA java.nio.charset.Charset
 IMPORT JAVA java.nio.charset.CharsetDecoder
 IMPORT JAVA java.nio.charset.CharsetEncoder
 IMPORT JAVA java.nio.charset.StandardCharsets
-IMPORT JAVA java.net.URI
+IMPORT JAVA java.nio.CharBuffer
+IMPORT JAVA java.nio.ByteBuffer
+IMPORT JAVA java.nio.ByteOrder
+IMPORT JAVA java.io.ByteArrayOutputStream
+IMPORT JAVA java.nio.channels.FileChannel
+IMPORT JAVA java.io.FileInputStream
+IMPORT JAVA java.nio.channels.SocketChannel
+IMPORT JAVA java.io.FileOutputStream
+IMPORT JAVA java.io.DataInputStream
+IMPORT JAVA java.io.DataOutputStream
+IMPORT JAVA java.nio.channels.SelectionKey
+IMPORT JAVA java.io.File
+IMPORT JAVA java.io.InputStream
+IMPORT JAVA java.nio.channels.Selector
+IMPORT JAVA java.nio.channels.ServerSocketChannel
 IMPORT JAVA java.net.ServerSocket
 IMPORT JAVA java.net.InetAddress
 IMPORT JAVA java.net.InetSocketAddress
-IMPORT JAVA java.util.Set --<SelectionKey>
 IMPORT JAVA java.util.HashSet
-IMPORT JAVA java.util.regex.Matcher
-IMPORT JAVA java.util.regex.Pattern
 IMPORT JAVA java.util.Iterator --<SelectionKey>
-IMPORT JAVA java.util.Base64
-IMPORT JAVA java.util.Base64.Encoder
-IMPORT JAVA java.lang.String
-IMPORT JAVA java.lang.Object
+IMPORT JAVA java.util.Set --<SelectionKey>
 IMPORT JAVA java.lang.Integer
 IMPORT JAVA java.security.SecureRandom
---IMPORT JAVA java.lang.Byte
---IMPORT JAVA java.lang.Boolean
---IMPORT JAVA java.util.Arrays
+IMPORT JAVA java.util.Base64.Encoder
+IMPORT JAVA java.util.Base64
+&endif
+IMPORT JAVA java.lang.String
 CONSTANT _keepalive =
     FALSE --if set to TRUE http socket connections are kept alive
 --currently: FALSE: TODO Safari blocks after fgl_putfile
@@ -73,10 +68,12 @@ PUBLIC TYPE TStartEntries RECORD
   url STRING
 END RECORD
 
-TYPE MyByteArray ARRAY[] OF TINYINT
 TYPE TStringDict DICTIONARY OF STRING
 TYPE TStringArr DYNAMIC ARRAY OF STRING
+&ifndef NO_JAVA
+TYPE MyByteArray ARRAY[] OF TINYINT
 TYPE ByteArray ARRAY[] OF TINYINT
+&endif
 TYPE LinkOptionArray ARRAY[] OF java.nio.file.LinkOption
 
 CONSTANT S_INIT = "Init"
@@ -113,10 +110,14 @@ TYPE FTList DYNAMIC ARRAY OF FTGetImage
 --isHTTP is set: its a HTTP connection
 TYPE TConnectionRec RECORD
   active BOOLEAN,
+&ifdef NO_JAVA
+  chan base.Channel,
+&else
   chan SocketChannel,
   dIn DataInputStream,
   dOut DataOutputStream,
   key SelectionKey,
+&endif
   state STRING,
   starttime DATETIME HOUR TO FRACTION(1),
   isHTTP BOOLEAN, --followed by http specific members
@@ -141,9 +142,13 @@ END RECORD
 --record holding the state of a VM connection
 TYPE TVMRec RECORD
   active BOOLEAN,
+&ifdef NO_JAVA
+  chan base.Channel,
+&else
   chan SocketChannel,
   dIn DataInputStream,
   key SelectionKey,
+&endif
   state STRING,
   starttime DATETIME HOUR TO FRACTION(1),
   vmVersion FLOAT, --vm reported version
@@ -159,8 +164,13 @@ TYPE TVMRec RECORD
   ftNum INT, --current FT num
   writeNum INT, --FT id1
   writeNum2 INT, --FT id2
+&ifdef NO_JAVA
+  writeCPut base.Channel,
+  writeC base.Channel,
+&else
   writeCPut FileOutputStream,
   writeC FileOutputStream,
+&endif
   procId STRING, --VM procId
   procIdParent STRING, --VM procIdParent
   procIdWaiting STRING, --VM procIdWaiting
@@ -216,9 +226,11 @@ DEFINE _v DYNAMIC ARRAY OF TVMRec --VM connections
 -- keep track of RUN WITHOUT WAITING children
 DEFINE _RWWchildren DICTIONARY OF TStringArr
 
+&ifndef NO_JAVA
 DEFINE _utf8 Charset
 DEFINE _encoder CharsetEncoder
 DEFINE _decoder CharsetDecoder
+&endif
 DEFINE _opt_port STRING
 DEFINE _opt_startfile STRING
 DEFINE _opt_logfile STRING
@@ -254,10 +266,15 @@ DEFINE _privdir STRING
 DEFINE _pubdir STRING
 DEFINE _progdir STRING
 DEFINE _htpre STRING
+&ifdef NO_JAVA
+DEFINE _server base.Channel
+DEFINE _channels DYNAMIC ARRAY OF base.Channel
+&else
 DEFINE _serverkey SelectionKey
 DEFINE _server ServerSocketChannel
-DEFINE _didAcceptOnce BOOLEAN
 DEFINE _selector Selector
+&endif
+DEFINE _didAcceptOnce BOOLEAN
 DEFINE _fglserver STRING
 
 --Parser state record
@@ -274,12 +291,16 @@ END RECORD
 DEFINE _p TclP
 
 MAIN
+&ifdef NO_JAVA
+  DEFINE chan base.Channel
+&else
   DEFINE socket ServerSocket
-  DEFINE port INT
-  DEFINE htpre STRING
-  DEFINE priv, pub STRING
   DEFINE addr InetAddress
   DEFINE saddr InetSocketAddress
+&endif
+  DEFINE port,idx INT
+  DEFINE htpre STRING
+  DEFINE priv, pub STRING
   LET _starttime = CURRENT
   CALL parseArgs()
   --'localhost' is sloow with Chrome/Edge on Windows
@@ -290,19 +311,27 @@ MAIN
   IF _opt_clearcache THEN
     CALL clearCache()
   END IF
+  LET _fglserver = fgl_getenv("FGLSERVER")
+&ifndef NO_JAVA
   LET _utf8 = StandardCharsets.UTF_8
   LET _encoder = _utf8.newEncoder()
   LET _decoder = _utf8.newDecoder()
-  LET _fglserver = fgl_getenv("FGLSERVER")
   LET _server = ServerSocketChannel.open();
   CALL _server.configureBlocking(FALSE);
   LET socket = _server.socket();
+&endif
   IF _opt_program IS NOT NULL AND _opt_port IS NULL THEN
     LET port = 8787
     LET _opt_autoclose = TRUE
   ELSE
     LET port = IIF(_opt_port IS NOT NULL, parseInt(_opt_port), 6400)
   END IF
+&ifdef NO_JAVA
+  LET port=findFreePortL(IIF(port==0,1025,port),NOT _opt_any)
+  DISPLAY "port:",port
+  LET _server = base.Channel.create()
+  CALL _server.openServerSocket("127.0.0.1",port,"u")
+&else
   LABEL bind_again:
   CALL log(SFMT("use port:%1 for bind()", port))
   TRY
@@ -323,6 +352,7 @@ MAIN
     END IF
   END TRY
   LET port = socket.getLocalPort()
+&endif
   IF _opt_program IS NULL THEN
     CALL writeStartFile(port)
   END IF
@@ -336,13 +366,30 @@ MAIN
   LET _htpre = htpre
   LET priv = htpre, "priv/"
   LET pub = htpre
+&ifndef NO_JAVA
   LET _selector = java.nio.channels.Selector.open()
   LET _serverkey = _server.register(_selector, SelectionKey.OP_ACCEPT);
+&endif
   LET _owndir = os.Path.fullPath(os.Path.dirName(arg_val(0)))
   IF _opt_program IS NOT NULL THEN
     CALL checkGBCAvailable()
     CALL setup_program(priv, pub, port)
   END IF
+&ifdef NO_JAVA
+  LET _channels[1]=_server
+  WHILE (idx:=base.Channel.select(_channels)) <> 0 
+    --DISPLAY "idx:",idx
+    IF idx==1 THEN
+      CALL acceptNew()
+    ELSE
+      LET chan=_channels[idx]
+      CALL handleConnection(chan)
+    END IF
+    IF _didAcceptOnce AND _checkGoOut AND canGoOut() THEN
+      EXIT WHILE
+    END IF
+  END WHILE
+&else
   WHILE TRUE
     CALL log(
         SFMT("_didAcceptOnce:%1,_checkGoOut:%2", _didAcceptOnce, _checkGoOut))
@@ -361,9 +408,31 @@ MAIN
     CALL _selector.select();
     CALL processKeys("processKeys selectedKeys():", _selector.selectedKeys())
   END WHILE
+&endif
   CALL log("fgljp FINISH")
 END MAIN
 
+FUNCTION findFreePortL(startport,local)
+  DEFINE startport INT
+  DEFINE local BOOLEAN
+  DEFINE ch base.Channel
+  DEFINE port INT
+  LET ch=base.Channel.create()
+  FOR port=startport TO 65535
+  TRY
+    CALL ch.openServerSocket(IIF(local,"127.0.0.1",NULL),port,"u")
+    DISPLAY "bound port ok:",port
+    CALL ch.close() --chance is high that we get this port
+    RETURN port
+  CATCH
+    DISPLAY sfmt("findFreePort: can't bind port %1:%2",port,err_get(status))
+  END TRY
+  END FOR
+  CALL myErr(sfmt("findFreePort:Can't find free port for start port:%1",startport))
+  RETURN NULL
+END FUNCTION
+
+&ifndef NO_JAVA
 FUNCTION processKeys(what STRING, inkeys Set)
   DEFINE keys Set
   DEFINE key SelectionKey
@@ -380,13 +449,13 @@ FUNCTION processKeys(what STRING, inkeys Set)
     LET key = CAST(it.next() AS SelectionKey);
     IF key.equals(_serverkey) THEN --accept a new connection
       MYASSERT(key.attachment() IS NULL)
-      LET _didAcceptOnce = TRUE
       CALL acceptNew()
     ELSE
       CALL handleConnection(key)
     END IF
   END WHILE
 END FUNCTION
+&endif
 
 FUNCTION printV(v INT)
   RETURN printSel(-v)
@@ -445,6 +514,7 @@ FUNCTION canGoOut()
   RETURN FALSE
 END FUNCTION
 
+&ifndef NO_JAVA
 FUNCTION printKey(key SelectionKey)
   DEFINE ji java.lang.Integer
   IF key.equals(_serverkey) THEN
@@ -466,6 +536,7 @@ FUNCTION printKeys(what STRING, keys Set)
   END WHILE
   DISPLAY what, o
 END FUNCTION
+&endif
 
 FUNCTION setup_program(priv STRING, pub STRING, port INT)
   DEFINE s, arg1, cmd, fglrun STRING
@@ -720,51 +791,59 @@ FUNCTION findFreeVMIdx()
   RETURN i
 END FUNCTION
 
+FUNCTION findIdxForChan(chan base.Channel) RETURNS(BOOLEAN,INT)
+  DEFINE isVM BOOLEAN
+  DEFINE idx INT
+  LET idx = _s.search("chan",chan)
+  IF idx==0 THEN
+    LET idx = _v.search("chan",chan)
+    IF idx <> 0 THEN
+      LET idx=-idx
+      LET isVM = TRUE
+    END IF
+  END IF
+  RETURN isVM,idx
+END FUNCTION
+
 FUNCTION acceptNew()
+&ifdef NO_JAVA
+  DEFINE chan base.Channel
+&else
   DEFINE chan SocketChannel
   DEFINE clientkey SelectionKey
+  DEFINE ji java.lang.Integer
   DEFINE ins InputStream
   DEFINE dIn DataInputStream
+&endif
   DEFINE c INT
-  DEFINE ji java.lang.Integer
+  LET _didAcceptOnce = TRUE
   LET chan = _server.accept()
   IF chan IS NULL THEN
     --CALL log("acceptNew: chan is NULL") --normal in non blocking
     RETURN
   END IF
+&ifndef NO_JAVA
   LET ins = chan.socket().getInputStream()
   LET dIn = DataInputStream.create(ins);
   CALL chan.configureBlocking(FALSE);
   LET clientkey = chan.register(_selector, SelectionKey.OP_READ);
+&endif
   LET c = findFreeSelIdx()
   CALL setEmptyConnection(c)
   LET _s[c].state = S_INIT
   LET _s[c].chan = chan
-  LET _s[c].dIn = dIn
   LET _s[c].starttime = CURRENT
   LET _s[c].active = TRUE
+&ifdef NO_JAVA
+  LET _channels[_channels.getLength()+1]=chan
+&else
+  LET _s[c].dIn = dIn
   LET _s[c].key = clientkey
   LET ji = java.lang.Integer.create(c)
   CALL clientkey.attach(ji)
+&endif
 END FUNCTION
 
-FUNCTION attachEncapsBuf(key SelectionKey)
-  --prepare the next encapsulated read
-  CALL key.attach(ByteBuffer.allocate(9))
-END FUNCTION
-
-FUNCTION attachBodySizeBuf(key SelectionKey, bodySize INT, type TINYINT)
-  --prepare read of user data
-  DEFINE xsize INT
-  DEFINE buf ByteBuffer
-  LET xsize = 9 + bodySize
-  --DISPLAY "attachBodySizeBuf:", bodySize, ",type:", type,",xsize:",xsize
-  LET buf = ByteBuffer.allocate(xsize)
-  CALL buf.putInt(bodySize)
-  CALL buf.putInt(bodySize)
-  CALL buf.put(type)
-  CALL key.attach(buf)
-END FUNCTION
 
 FUNCTION removeCR(s STRING)
   IF s.getCharAt(s.getLength()) == '\r' THEN
@@ -887,19 +966,35 @@ FUNCTION finishHttp(x INT)
   END IF
 END FUNCTION
 
+&ifdef NO_JAVA
+FUNCTION isBlocking(chan base.Channel)
+  UNUSED_VAR(chan)
+  RETURN TRUE
+END FUNCTION
+&else
+FUNCTION isBlocking(chan SocketChannel)
+  RETURN chan.isBlocking()
+END FUNCTION
+&endif
+
+
 FUNCTION checkHTTPForSend(x INT, procId STRING, vmclose BOOLEAN, line STRING)
+&ifndef NO_JAVA
   DEFINE key SelectionKey
   LET key = _s[x].key
+&endif
   MYASSERT(_s[x].state == S_WAITFORVM)
   CALL log(
       SFMT("checkHTTPForSend procId:%1, vmclose:%2,%3",
           procId, vmclose, printSel(x)))
+&ifndef NO_JAVA
   IF NOT _s[x].chan.isBlocking() THEN
     --CALL log(SFMT("  !blocking:%1", printSel(x)))
     CALL configureBlocking(key, _s[x].chan)
   ELSE
     CALL log(SFMT("  isBlocking:%1", printSel(x)))
   END IF
+&endif
   CALL sendToClient(x, line, procId, vmclose, FALSE)
   CALL finishHttp(x)
 END FUNCTION
@@ -1798,11 +1893,13 @@ FUNCTION http404(x INT, fn STRING)
   CALL writeResponseInt(x, content, "text/html", "404 Not Found")
 END FUNCTION
 
+&ifndef NO_JAVA
 FUNCTION createDout(chan SocketChannel)
   DEFINE dOut DataOutputStream
   LET dOut = DataOutputStream.create(chan.socket().getOutputStream())
   RETURN dOut
 END FUNCTION
+&endif
 
 FUNCTION writeHTTPLine(x INT, s STRING)
   LET s = s, "\r\n"
@@ -1810,14 +1907,26 @@ FUNCTION writeHTTPLine(x INT, s STRING)
 END FUNCTION
 
 FUNCTION writeHTTP(x INT, s STRING)
+&ifdef NO_JAVA
+  DEFINE chan base.Channel
+&else
   DEFINE js java.lang.String
+&endif
   IF s IS NULL THEN
     RETURN
   END IF
+&ifdef NO_JAVA
+  LET chan=_s[x].chan
+  MYASSERT( _channels.search(NULL,chan)>0 )
+  --DISPLAY sfmt("writeHTTP:'%1'",s)
+  CALL chan.writeNoNL(s)
+&else
   LET js = s
   CALL writeHTTPBytes(x, js.getBytes(StandardCharsets.UTF_8))
+&endif
 END FUNCTION
 
+&ifndef NO_JAVA
 FUNCTION writeHTTPBytes(x INT, bytes MyByteArray)
   LET _s[x].dOut =
       IIF(_s[x].dOut IS NOT NULL, _s[x].dOut, createDout(_s[x].chan))
@@ -1829,6 +1938,7 @@ FUNCTION writeHTTPBytes(x INT, bytes MyByteArray)
     CALL printStderr(SFMT("ERROR:writeHTTPBytes:%1", err_get(status)))
   END TRY
 END FUNCTION
+&endif
 
 FUNCTION checkPutFileGetFile(x INT, vmidx INT, s STRING)
   UNUSED_VAR(s)
@@ -1898,9 +2008,9 @@ FUNCTION handleClientMeta(vmidx INT, meta STRING)
 END FUNCTION
 
 FUNCTION writeToVM(vmidx INT, s STRING)
-  CALL log(SFMT("writeToVM:%1", s))
+  CALL log(SFMT("writeToVM:'%1'", s))
   IF _v[vmidx].wait THEN
-    --DISPLAY "!!!!!!!!!!!!!!writeToVM wait pending:"
+    DISPLAY "!!!!!!!!!!!!!!writeToVM wait pending:"
     LET _v[vmidx].toVMCmd = s
     RETURN
   END IF
@@ -1918,12 +2028,38 @@ FUNCTION writeToVM(vmidx INT, s STRING)
 END FUNCTION
 
 FUNCTION writeToVMNoEncaps(vmidx INT, s STRING)
+&ifdef NO_JAVA
+  DEFINE chan base.Channel
+  LET chan=_v[vmidx].chan
+  MYASSERT( _channels.search(NULL,chan)>0)
+  CALL chan.writeNoNL(s)
+  CALL chan.flush()
+  DISPLAY sfmt("writeToVMNoEncaps vmidx:%1 s:'%2'",vmidx,s)
+&else
   DEFINE jstring java.lang.String
   LET jstring = s
   CALL writeChannel(vmidx, _encoder.encode(CharBuffer.wrap(jstring)))
+&endif
 END FUNCTION
 
+
 FUNCTION writeHTTPFile(x INT, fn STRING, ctlen INT)
+&ifdef NO_JAVA
+  DEFINE s STRING
+  DEFINE numBytes INT
+  DEFINE c base.Channel
+  DEFINE chan base.Channel
+  LET chan=_s[x].chan
+  MYASSERT( chan IS NOT NULL AND _channels.search(NULL,chan)>0 )
+  LET c=base.Channel.create()
+  CALL c.openFile(fn,"r")
+  LET numBytes=os.Path.size(fn)
+  MYASSERT(os.Path.size(fn) == ctlen)
+  VAR written=c.copyN(chan, ctlen)
+  MYASSERT(written==ctlen)
+  CALL c.close()
+  DISPLAY "DID WRITE:",fn,",with:",s.getLength()," bytes"
+&else
   DEFINE f java.io.File
   DEFINE bytes MyByteArray
   LET f = File.create(fn)
@@ -1937,6 +2073,7 @@ FUNCTION writeHTTPFile(x INT, fn STRING, ctlen INT)
     DISPLAY SFMT("ERROR writeHTTPFile fname:%1,ctlen:%2,err:%3",
         fn, ctlen, err_get(status))
   END TRY
+&endif
 END FUNCTION
 
 FUNCTION writeResponse(x INT, content STRING)
@@ -2070,9 +2207,11 @@ FUNCTION endPutfileFT(vmidx INT)
   --DISPLAY SFMT("!!!!!!!sendFTStatus %1 and lookupNextImage", num)
   CALL sendFTStatus(vmidx, num, FTOk)
   CALL lookupNextImage(vmidx)
+&ifndef NO_JAVA
   IF NOT _v[vmidx].wait AND _v[vmidx].chan.isBlocking() THEN
     CALL checkReRegisterVMFromHTTP(vmidx)
   END IF
+&endif
 END FUNCTION
 
 FUNCTION checkCDAttachment(x INT, hdrs TStringArr)
@@ -2133,26 +2272,36 @@ FUNCTION writeResponseInt2(
     headers DYNAMIC ARRAY OF STRING,
     code STRING)
   DEFINE content_length INT
+&ifndef NO_JAVA
   DEFINE js java.lang.String
   DEFINE bytes MyByteArray
   MYASSERT(_s[x].chan.isBlocking())
+&endif
 
   CALL writeHTTPLine(x, SFMT("HTTP/1.1 %1", code))
   CALL writeHTTPCommon(x)
   IF content IS NULL THEN
     LET content = " " CLIPPED
   END IF
+&ifndef NO_JAVA
   LET js = content
   LET bytes = js.getBytes(StandardCharsets.UTF_8)
   --note we must use content length from the actual byte count
   LET content_length = bytes.getLength()
+&else
+  LET content_length = content.getLength() -- need content.getByteLength()
+&endif
   CALL writeHTTPHeaders(x, headers)
   CALL writeHTTPLine(x, SFMT("Content-Length: %1", content_length))
   IF ct IS NOT NULL THEN
     CALL writeHTTPLine(x, SFMT("Content-Type: %1", ct))
   END IF
   CALL writeHTTPLine(x, "")
+&ifdef NO_JAVA
+  CALL _s[x].chan.writeBinaryString(content)
+&else
   CALL writeHTTPBytes(x, bytes)
+&endif
 END FUNCTION
 
 FUNCTION writeResponseFileHdrs(x INT, fn STRING, ct STRING, headers TStringArr)
@@ -2250,8 +2399,10 @@ FUNCTION handleVMMetaSel(c INT, line STRING)
   LET _v[vmidx].chan = _s[c].chan
   LET _v[vmidx].starttime = _s[c].starttime
   LET _v[vmidx].state = _s[c].state
+&ifndef NO_JAVA
   LET _v[vmidx].dIn = _s[c].dIn
   LET _v[vmidx].key = _s[c].key
+&endif
   --'free' the _s[c] index
   CALL setEmptyConnection(c)
   --DISPLAY "handleVMMetaSel: vmidx:", vmidx, ":", util.JSON.stringify(_v[vmidx])
@@ -2384,13 +2535,37 @@ FUNCTION setEmptyVMConnection(v INT)
   CALL log(SFMT("  _lastVM=%1", _lastVM))
 END FUNCTION
 
+&ifdef NO_JAVA
+FUNCTION handleConnection(chan base.Channel)
+&else
 FUNCTION handleConnection(key SelectionKey)
   DEFINE chan SocketChannel
   DEFINE readable BOOLEAN
   DEFINE ji java.lang.Integer
-  DEFINE c, v INT
   DEFINE err STRING
+&endif
+  DEFINE c, v INT
   DEFINE isVM, closed BOOLEAN
+&ifdef NO_JAVA
+  CALL findIdxForChan(chan) RETURNING isVM, c
+  MYASSERT(c <> 0)
+  LET v=IIF(isVM,-c,0)
+  CALL log(SFMT("handleConnection:%1 %2 v:%3", c, printSel(c), v))
+  {
+  IF chan.isEof() THEN
+    IF isVM THEN
+      CALL handleVMFinish(v)
+    ELSE
+      CALL closeSel(c)
+    END IF
+    RETURN
+  END IF
+  IF NOT chan.dataAvailable() THEN
+     DISPLAY "  !!!!no data available!!!"
+     RETURN
+  END IF
+  }
+&else
   TRY
     LET readable = key.isReadable()
   CATCH
@@ -2416,11 +2591,13 @@ FUNCTION handleConnection(key SelectionKey)
   LET isVM = c < 0
   LET v = IIF(isVM, -c, 0)
   CALL log(SFMT("handleConnection:%1 %2 v:%3", c, printSel(c), v))
+  CALL configureBlocking(key, chan)
+&endif
   IF isVM AND _v[v].wait THEN
     --DISPLAY "!!!!reset wait for:", v
     LET _v[v].wait = FALSE
   END IF
-  CALL handleConnectionInt(isVM, v, c, key, chan) RETURNING isVM, v, closed
+  CALL handleConnectionInt(isVM, v, c) RETURNING isVM, v, closed
   IF isVM AND v <> -1 THEN
     IF _v[v].didSendVMClose OR _v[v].state = S_FINISH THEN
       {
@@ -2440,6 +2617,7 @@ FUNCTION handleConnection(key SelectionKey)
           LET _v[v].toVMCmd = NULL
         END IF
       END IF
+&ifndef NO_JAVA
       IF (NOT _v[v].wait AND (_v[v].VmCmd IS NOT NULL AND _v[v].clientMetaSent))
           OR (_v[v].chan IS NULL OR NOT _v[v].chan.isBlocking()) THEN
         CALL log(
@@ -2452,6 +2630,7 @@ FUNCTION handleConnection(key SelectionKey)
       ELSE
         CALL checkReRegister(TRUE, v, c)
       END IF
+&endif
       {
       DISPLAY "did set _selDict:",
           _v[v].procId,
@@ -2472,6 +2651,11 @@ FUNCTION handleConnection(key SelectionKey)
 END FUNCTION
 
 FUNCTION reRegister(isVM BOOLEAN, v INT, c INT)
+&ifdef NO_JAVA
+  UNUSED_VAR(isVM)
+  UNUSED_VAR(v)
+  UNUSED_VAR(c)
+&else
   DEFINE newkey SelectionKey
   DEFINE num, numKeys INT
   DEFINE chan SocketChannel
@@ -2491,6 +2675,7 @@ FUNCTION reRegister(isVM BOOLEAN, v INT, c INT)
     LET _s[c].key = newkey
   END IF
   CALL newkey.attach(ji)
+&endif
 END FUNCTION
 
 FUNCTION handleStart(vmidx INT)
@@ -2583,14 +2768,16 @@ FUNCTION connectToGDC(url STRING) --works only for the emulator
   RUN SFMT("fglrun runongdc %1", url) WITHOUT WAITING
 END FUNCTION
 
+&ifndef NO_JAVA
 FUNCTION configureBlocking(key SelectionKey, chan SocketChannel)
   CALL key.interestOps(0)
   CALL key.cancel()
   CALL chan.configureBlocking(TRUE)
 END FUNCTION
+&endif
 
 FUNCTION handleConnectionInt(
-    isVM BOOLEAN, v INT, c INT, key SelectionKey, chan SocketChannel)
+    isVM BOOLEAN, v INT, c INT)
   DEFINE go_out, closed BOOLEAN
   DEFINE line STRING
   {
@@ -2599,10 +2786,9 @@ FUNCTION handleConnectionInt(
   END IF
   }
   --DISPLAY "configureBlocking:",printSel(c)
-  CALL configureBlocking(key, chan)
   WHILE NOT go_out
     IF NOT isVM AND _s[c].isHTTP AND _s[c].state == S_WAITCONTENT THEN
-      CALL handleWaitContent(c, _s[c].dIn)
+      CALL handleWaitContent(c)
       EXIT WHILE
     END IF
     CALL ReadLine(isVM, v, c) RETURNING line, go_out
@@ -2631,9 +2817,24 @@ END FUNCTION
 --we need to read the encapsulated VM data and decice
 --upon the type byte what is to do
 FUNCTION readEncaps(vmidx INT)
-  DEFINE s1, s2, bodySize, dataSize INT
+  DEFINE bodySize, dataSize INT
   DEFINE type TINYINT
-  DEFINE line, err STRING
+  DEFINE line STRING
+&ifdef NO_JAVA
+  DEFINE chan base.Channel
+  LET chan=_v[vmidx].chan
+  LET bodySize=chan.readNetInt32()
+  IF chan.isEof() THEN
+    DISPLAY "EOF detected"
+    RETURN TAuiData, ""
+  END IF
+  LET dataSize=chan.readNetInt32()
+  LET type = chan.readNetInt8()
+  --DISPLAY "readEncaps: bodySize:",bodySize,",type:",type
+  MYASSERT(bodySize==dataSize)
+&else
+  DEFINE s1, s2 INT
+  DEFINE err STRING
   DEFINE dIn DataInputStream
   LET dIn = _v[vmidx].dIn
   --LET _v[vmidx].wait = FALSE
@@ -2655,6 +2856,7 @@ FUNCTION readEncaps(vmidx INT)
   CALL log(SFMT("readEncaps bodySize:%1,dataSize:%2", bodySize, dataSize))
   MYASSERT(bodySize == dataSize)
   LET type = dIn.readByte()
+&endif
   CASE
     WHEN type = TAuiData
       --DISPLAY "read TAuiData"
@@ -2662,13 +2864,14 @@ FUNCTION readEncaps(vmidx INT)
       CALL lookupNextImage(vmidx)
     WHEN type = TFileTransfer
       --DISPLAY "read TFileTransfer"
-      CALL handleFT(vmidx, dIn, dataSize)
+      CALL handleFT(vmidx, dataSize)
     OTHERWISE
       CALL myErr(SFMT("unhandled encaps type:%1", type))
   END CASE
   RETURN type, line
 END FUNCTION
 
+&ifndef NO_JAVA
 FUNCTION didReadCompleteVMCmd(buf ByteBuffer)
   DEFINE lastByte TINYINT
   DEFINE pos, lastPos INT
@@ -2698,6 +2901,7 @@ FUNCTION readChan(vmidx INT, numRead INT, chan SocketChannel, buf ByteBuffer)
   END TRY
   RETURN didRead
 END FUNCTION
+&endif
 
 --unfortunately we can't use neither
 --DataInputStream.readLine nor
@@ -2705,12 +2909,25 @@ END FUNCTION
 --this forces us to read byte chunks until we discover '\n'
 --which may give us even more than one line (in the processing case)
 FUNCTION readLineFromVM(vmidx INT, dataSize INT)
+&ifdef NO_JAVA
+  DEFINE chan base.Channel
+  DEFINE line STRING
+  LET chan = _v[vmidx].chan
+  IF dataSize==0 THEN
+    LET line=chan.readLine() --need to check for '\r'
+    --DISPLAY "did read line:'",line,"'"
+  ELSE
+    --LET line=chan.readBinaryString(dataSize)
+    LET line=chan.readOctets(dataSize)
+    --DISPLAY sfmt("did read binary line(%1)='%2'",dataSize,line)
+  END IF
+  RETURN line
+&else
   DEFINE buf, newbuf ByteBuffer
   DEFINE chan SocketChannel
   DEFINE bufsize, didRead, newsize, num, len, len1, numRead INT
   DEFINE js java.lang.String
   DEFINE s STRING
-  LET chan = _v[vmidx].chan
   LET bufsize = IIF(dataSize > 0, dataSize, 30000)
   LET buf = ByteBuffer.allocate(bufsize)
   LET numRead = 1
@@ -2745,6 +2962,7 @@ FUNCTION readLineFromVM(vmidx INT, dataSize INT)
   MYASSERT(js.charAt(len1) == "\n") --my guess is Java string indexing is a picosecond faster than VM indexing
   LET s = js.substring(0, len1)
   RETURN s
+&endif
 END FUNCTION
 
 FUNCTION ReadLine(isVM BOOLEAN, v INT, c INT)
@@ -2762,7 +2980,11 @@ FUNCTION ReadLine(isVM BOOLEAN, v INT, c INT)
     END IF
   ELSE
     TRY
+&ifdef NO_JAVA
+      LET line = _s[c].chan.readLine()
+&else
       LET line = _s[c].dIn.readLine()
+&endif
     CATCH
       CALL log(SFMT("ReadLine:%1", err_get(status)))
     END TRY
@@ -2771,7 +2993,7 @@ FUNCTION ReadLine(isVM BOOLEAN, v INT, c INT)
 END FUNCTION
 
 FUNCTION handleEmptyLine(isVM BOOLEAN, v INT, c INT)
-  --DISPLAY "line '' isVM:", isVM, ",v:", v, ",c:", c
+  --DISPLAY "handleEmpyLine , line '' isVM:", isVM, ",v:", v, ",c:", c
   IF isVM THEN
     CALL handleVMFinish(v)
     RETURN GO_OUT, FALSE
@@ -2781,10 +3003,15 @@ FUNCTION handleEmptyLine(isVM BOOLEAN, v INT, c INT)
       CALL closeSel(c)
       RETURN GO_OUT, CLOSED
     END IF
+    --DISPLAY "_s[c].state=",_s[c].state,"_s[c].contentLength:",_s[c].contentLen
     MYASSERT(_s[c].isHTTP AND _s[c].state == S_HEADERS)
     IF _s[c].contentLen > 0 THEN
       LET _s[c].state = S_WAITCONTENT
+&ifdef NO_JAVA
+      RETURN FALSE, FALSE
+&else
       RETURN GO_OUT, FALSE
+&endif
     ELSE
       --DISPLAY "Finish of :", _s[c].path
       CALL httpHandler(c) --might set state to S_WAITFORVM or to S_FINISH
@@ -2840,6 +3067,7 @@ FUNCTION handleLine(isVM BOOLEAN, v INT, c INT, line STRING)
   RETURN FALSE, isVM, v
 END FUNCTION
 
+&ifndef NO_JAVA
 FUNCTION merge2BA(
     ba ByteArray, prev ByteArray, baRead INT, blen INT, MAXB INT)
     RETURNS(ByteArray, ByteArray, INT, INT)
@@ -2990,17 +3218,39 @@ FUNCTION handleMultiPartUpload(
   END WHILE
   CALL fo.close()
 END FUNCTION
+&endif
 
 FUNCTION createFO(path STRING)
+&ifdef NO_JAVA
+  DEFINE fo base.Channel
+&else
   DEFINE fo FileOutputStream
+&endif
   IF path.getIndexOf("/", 1) == 1 THEN
     LET path = ".", path
   END IF
+&ifdef NO_JAVA
+  LET fo=base.Channel.create()
+  CALL fo.openFile(path,"w")
+&else
   LET fo = FileOutputStream.create(path);
+&endif
   RETURN fo
 END FUNCTION
 
-FUNCTION handleSimplePost(x INT, dIn DataInputStream, path STRING)
+FUNCTION copyBytes(src base.Channel,dest base.Channel,numBytes INT)
+  VAR bytesWritten = src.copyN(dest, numBytes)
+  MYASSERT(bytesWritten==numBytes)
+END FUNCTION
+
+FUNCTION handleSimplePost(x INT, path STRING)
+&ifdef NO_JAVA
+  DEFINE chan base.Channel
+  DEFINE fo base.Channel
+  LET chan=_s[x].chan
+&else
+  DEFINE dIn DataInputStream
+  LET dIn=_s[x].dIn
   DEFINE fo FileOutputStream
   DEFINE bytearr ByteArray
   --DEFINE jstring java.lang.String
@@ -3008,29 +3258,51 @@ FUNCTION handleSimplePost(x INT, dIn DataInputStream, path STRING)
   CALL dIn.readFully(bytearr)
   --LET jstring = java.lang.String.create(bytearr, StandardCharsets.UTF_8)
   --DISPLAY "  bytearr:", jstring
+&endif
   LET fo = createFO(path)
+&ifdef NO_JAVA
+  CALL copyBytes(chan, fo,_s[x].contentLen)
+&else
   CALL fo.write(bytearr)
+&endif
   CALL fo.close()
 END FUNCTION
 
-FUNCTION handleWaitContent(x INT, dIn DataInputStream)
+FUNCTION handleWaitContent(x INT)
+&ifdef NO_JAVA
+  DEFINE chan base.Channel
+&else
   DEFINE bytearr ByteArray
   DEFINE jstring java.lang.String
+  DEFINE dIn DataInputStream
+&endif
   DEFINE path, ct STRING
   LET path = _s[x].path
+   
   CALL log(SFMT("handleWaitContent %1, read:%2", path, _s[x].contentLen))
   IF path.getIndexOf("/ua/", 1) == 1 THEN
+&ifdef NO_JAVA
+    LET chan=_s[x].chan
+    --LET _s[x].body = chan.readBinaryString(_s[x].contentLen)
+    LET _s[x].body = chan.readOctets(_s[x].contentLen)
+&else
     LET bytearr = ByteArray.create(_s[x].contentLen)
+    LET dIn= _s[x].dIn
     CALL dIn.readFully(bytearr)
     LET jstring = java.lang.String.create(bytearr, StandardCharsets.UTF_8)
     LET _s[x].body = jstring
+&endif
     --DISPLAY "  body=", _s[x].body
   ELSE
     LET ct = _s[x].contentType
     IF ct.getIndexOf("multipart/form-data", 1) > 0 THEN
-      CALL handleMultiPartUpload(x, dIn, path, ct)
+&ifdef NO_JAVA
+     DISPLAY "Unhandled: multipart upload"
+&else
+     CALL handleMultiPartUpload(x, dIn, path, ct)
+&endif
     ELSE
-      CALL handleSimplePost(x, dIn, path)
+      CALL handleSimplePost(x, path)
     END IF
   END IF
   CALL httpHandler(x)
@@ -3058,8 +3330,47 @@ FUNCTION handleVMFinish(v INT)
     END IF
   END IF
   LET _v[vmidx].state = S_FINISH
+&ifndef NO_JAVA
   LET _v[vmidx].dIn = close_dIn(_v[vmidx].dIn)
+&endif
   LET _v[vmidx].chan = close_chan(_v[vmidx].chan)
+END FUNCTION
+
+
+&ifdef NO_JAVA
+FUNCTION close_chan(chan base.Channel)
+  DEFINE idx INT
+  IF chan IS NOT NULL THEN
+    CALL chan.close()
+  END IF
+  LET idx=_channels.search(NULL,chan)
+  IF idx>0 THEN
+    --DISPLAY "close_chan:remove channels idx:",idx
+    CALL _channels.deleteElement(idx)
+  ELSE
+    --DISPLAY "channel already removed"
+  END IF
+  RETURN NULL
+END FUNCTION
+&else
+FUNCTION close_chan(chan SocketChannel)
+  DEFINE ins InputStream
+  IF chan IS NOT NULL THEN
+    IF NOT chan.socket().isClosed() THEN
+      LET ins = chan.socket().getInputStream()
+      CALL ins.close()
+      CALL chan.socket().close()
+    END IF
+    CALL chan.close()
+  END IF
+  RETURN NULL
+END FUNCTION
+
+FUNCTION close_key(key SelectionKey)
+  IF key IS NOT NULL THEN
+    CALL key.cancel()
+  END IF
+  RETURN NULL
 END FUNCTION
 
 FUNCTION close_dIn(dIn DataInputStream)
@@ -3075,32 +3386,15 @@ FUNCTION close_dOut(dOut DataOutputStream)
   END IF
   RETURN NULL
 END FUNCTION
-
-FUNCTION close_key(key SelectionKey)
-  IF key IS NOT NULL THEN
-    CALL key.cancel()
-  END IF
-  RETURN NULL
-END FUNCTION
-
-FUNCTION close_chan(chan SocketChannel)
-  DEFINE ins InputStream
-  IF chan IS NOT NULL THEN
-    IF NOT chan.socket().isClosed() THEN
-      LET ins = chan.socket().getInputStream()
-      CALL ins.close()
-      CALL chan.socket().close()
-    END IF
-    CALL chan.close()
-  END IF
-  RETURN NULL
-END FUNCTION
+&endif
 
 FUNCTION closeSel(x INT)
   CALL log(SFMT("closeSel:%1", printSel(x)))
+&ifndef NO_JAVA
   LET _s[x].dIn = close_dIn(_s[x].dIn)
   LET _s[x].dOut = close_dOut(_s[x].dOut)
   LET _s[x].key = close_key(_s[x].key)
+&endif
   LET _s[x].chan = close_chan(_s[x].chan)
   LET _s[x].active = FALSE
 END FUNCTION
@@ -3109,7 +3403,7 @@ FUNCTION checkReRegisterVMFromHTTP(v INT)
   MYASSERT(v > 0 AND v <= _v.getLength())
   IF _currIdx <= 0
       OR (NOT _v[v].active)
-      OR (_v[v].chan IS NULL OR NOT _v[v].chan.isBlocking()) THEN
+      OR (_v[v].chan IS NULL OR NOT isBlocking(_v[v].chan)) THEN
     RETURN
   END IF
   {
@@ -3134,9 +3428,11 @@ FUNCTION checkReRegister(isVM BOOLEAN, v INT, c INT)
           == TRUE THEN
     IF newChan THEN
       CALL log(SFMT("re register newchan id:%1", c))
+      LET empty.chan = _s[c].chan
+&ifndef NO_JAVA
       LET empty.dIn = _s[c].dIn
       LET empty.dOut = _s[c].dOut
-      LET empty.chan = _s[c].chan
+&endif
       LET _s[c].* = empty.*
       LET _s[c].active = TRUE
       LET _s[c].starttime = CURRENT
@@ -3155,6 +3451,21 @@ FUNCTION setWait(vmidx INT)
   CALL checkReRegisterVMFromHTTP(vmidx)
 END FUNCTION
 
+&ifdef NO_JAVA
+FUNCTION getNameC(chan base.Channel)
+  DEFINE name STRING
+  DEFINE namesize, xlen INT
+  LET namesize = chan.readNetInt32()
+  --namesize includes the terminating 0
+  --LET name=chan.readBinaryString(namesize-1)
+  LET name=chan.readOctets(namesize-1)
+  LET xlen=chan.readNetInt8() --read over terminating 0
+  CALL log(
+      SFMT("getNameC name:%1 len:%2 ,namesize:%3, bytes:%4",
+          name, name.getLength(), namesize, namesize + 4))
+  RETURN name,namesize+4
+END FUNCTION
+&else
 FUNCTION getNameC(dIn DataInputStream)
   DEFINE name STRING
   DEFINE arr MyByteArray
@@ -3178,6 +3489,7 @@ FUNCTION getNameC(dIn DataInputStream)
           name, name.getLength(), namesize, namesize + 4))
   RETURN name, namesize + 4
 END FUNCTION
+&endif
 
 FUNCTION FTName(name STRING) RETURNS STRING
   RETURN clientSideName(name, "FT") --all getfile/putfile lands in "FT"
@@ -3299,17 +3611,28 @@ END FUNCTION
 FUNCTION createOutputStream(
     vmidx INT, num INT, fn STRING, putfile BOOLEAN)
     RETURNS BOOLEAN
+&ifdef NO_JAVA
+  DEFINE fc base.Channel
+&else
   DEFINE f java.io.File
   DEFINE fc FileOutputStream
+&endif
   IF putfile THEN
     MYASSERT(_v[vmidx].writeCPut IS NULL)
   ELSE
     MYASSERT(_v[vmidx].writeC IS NULL)
   END IF
   --CALL log(sfmt("createOutputStream:'%1'",fn))
+&ifndef NO_JAVA
   LET f = File.create(fn)
+&endif
   TRY
+&ifdef NO_JAVA
+    LET fc=base.Channel.create()
+    CALL fc.openFile(fn,"w")
+&else
     LET fc = FileOutputStream.create(f, FALSE)
+&endif
     IF putfile THEN
       LET _v[vmidx].writeCPut = fc
     ELSE
@@ -3327,6 +3650,7 @@ FUNCTION createOutputStream(
   RETURN TRUE
 END FUNCTION
 
+&ifndef NO_JAVA
 FUNCTION createInputStream(fn STRING) RETURNS FileChannel
   DEFINE readC FileChannel
   TRY
@@ -3337,6 +3661,7 @@ FUNCTION createInputStream(fn STRING) RETURNS FileChannel
   END TRY
   RETURN readC
 END FUNCTION
+&endif
 
 FUNCTION hasPrefix(s STRING, prefix STRING)
   RETURN s.getIndexOf(prefix, 1) == 1
@@ -3413,20 +3738,21 @@ FUNCTION lookupInCache(name STRING) RETURNS(BOOLEAN, INT, INT)
   RETURN TRUE, s, t
 END FUNCTION
 
+&ifndef NO_JAVA
 FUNCTION writeChannel(vmidx INT, buf ByteBuffer)
   DEFINE limit INT
-  DEFINE didSetBlocking BOOLEAN
+  --DEFINE didSetBlocking BOOLEAN
   LET limit = buf.limit()
   MYASSERT(vmidx > 0 AND _v[vmidx].chan IS NOT NULL)
-  IF NOT _v[vmidx].chan.isBlocking() THEN
+  IF NOT isBlocking(_v[vmidx].chan) THEN
     --DISPLAY "configureBlocking:",printV(vmidx)
     MYASSERT(_currIdx > 0)
     CALL configureBlocking(_v[vmidx].key, _v[vmidx].chan)
-    LET didSetBlocking = TRUE
+    --LET didSetBlocking = TRUE
     --ELSE
     --  DISPLAY "blocking:", printV(vmidx)
   END IF
-  MYASSERT(_v[vmidx].chan.isBlocking())
+  MYASSERT(isBlocking(_v[vmidx].chan))
   --WHILE buf.hasRemaining() --need to loop because
   CALL _v[vmidx].chan.write(buf) --chan is non blocking
   --END WHILE
@@ -3438,6 +3764,7 @@ FUNCTION writeChannel(vmidx INT, buf ByteBuffer)
   END IF
   }
 END FUNCTION
+&endif
 
 FUNCTION getByte(x, pos) --pos may be 0..3
   DEFINE x, pos, b INTEGER
@@ -3446,6 +3773,7 @@ FUNCTION getByte(x, pos) --pos may be 0..3
   RETURN b
 END FUNCTION
 
+&ifndef NO_JAVA
 FUNCTION htonl(value) RETURNS INT
   DEFINE value INT
   RETURN ByteBuffer.allocate(4)
@@ -3460,6 +3788,7 @@ FUNCTION ntohl(value) RETURNS INT
       .order(ByteOrder.BIG_ENDIAN)
       .getInt(0);
 END FUNCTION
+&endif
 
 FUNCTION limitPrintStr(s STRING)
   DEFINE len INT
@@ -3553,12 +3882,6 @@ FUNCTION quoteVMStr(s STRING)
     END CASE
   END FOR
   RETURN sb.toString()
-END FUNCTION
-
-FUNCTION getMatcherForRegex(regex STRING, toExamine STRING) RETURNS Matcher
-  DEFINE pat Pattern
-  LET pat = Pattern.compile(regex)
-  RETURN pat.matcher(toExamine)
 END FUNCTION
 
 FUNCTION parseInt(s STRING)
@@ -3762,7 +4085,7 @@ FUNCTION getMacDefaultBrowser()
             PBUDDY, cnt, quote(plist))
     CALL getProgramOutputWithErr(cmd) RETURNING result, err
     IF err IS NOT NULL THEN
-      DISPLAY SFMT("Can't run:%1,err:%2", cmd, err)
+      --DISPLAY SFMT("Can't run:%1,err:%2", cmd, err)
       EXIT WHILE
     END IF
     IF result == "http" OR result == "https" THEN
@@ -3781,6 +4104,7 @@ FUNCTION getMacDefaultBrowser()
     END IF
     LET cnt = cnt + 1
   END WHILE
+  DISPLAY "default browser:",browser
   RETURN browser
 END FUNCTION
 
@@ -4008,6 +4332,11 @@ FUNCTION makeTempName()
 END FUNCTION
 
 FUNCTION sendFileToVM(vmidx INT, num INT, name STRING)
+&ifdef NO_JAVA
+  UNUSED_VAR(name)
+  CALL sendFTStatus(vmidx, num, FStErrSource)
+  --LET s=_v[vmidx].chan.readOctets
+&else
   DEFINE buf ByteBuffer
   DEFINE bytesRead INT
   DEFINE chan FileChannel
@@ -4028,6 +4357,7 @@ FUNCTION sendFileToVM(vmidx INT, num INT, name STRING)
   CALL chan.close()
   CALL sendEof(vmidx, num)
   CALL setWait(vmidx)
+&endif
 END FUNCTION
 
 FUNCTION getWriteNum(vmidx INT)
@@ -4049,11 +4379,21 @@ FUNCTION resetWriteNum(vmidx INT, num INT)
   END IF
 END FUNCTION
 
-FUNCTION handleFTPutFile(vmidx INT, dIn DataInputStream, num INT, remaining INT)
+FUNCTION handleFTPutFile(vmidx INT, num INT, remaining INT)
   DEFINE fileSize, numBytes INT
   DEFINE name STRING
+&ifdef NO_JAVA
+  DEFINE chan base.Channel
+  LET chan=_v[vmidx].chan
+  LET fileSize = chan.readNetInt32()
+  LET num = chan.readNetInt32()
+  CALL getNameC(chan) RETURNING name, numBytes
+&else
+  DEFINE dIn DataInputStream
+  LET dIn=_v[vmidx].dIn
   LET fileSize = ntohl(dIn.readInt())
   CALL getNameC(dIn) RETURNING name, numBytes
+&endif
   LET remaining = remaining - 4 - numBytes
 
   CALL log(
@@ -4075,15 +4415,30 @@ FUNCTION handleFTPutFile(vmidx INT, dIn DataInputStream, num INT, remaining INT)
   RETURN remaining
 END FUNCTION
 
-FUNCTION handleFTGetFile(vmidx INT, dIn DataInputStream, num INT, remaining INT)
+FUNCTION handleFTGetFile(vmidx INT, num INT, remaining INT)
   DEFINE numBytes, mId INT
   DEFINE name, sname STRING
+&ifdef NO_JAVA
+  DEFINE chan base.Channel
+  DEFINE ext STRING
+  LET chan=_v[vmidx].chan
+  CALL getNameC(chan) RETURNING name, numBytes
+&else
+  DEFINE dIn DataInputStream
   DEFINE ba MyByteArray
+  LET dIn=_v[vmidx].dIn
   CALL getNameC(dIn) RETURNING name, numBytes
+&endif
   LET remaining = remaining - numBytes
   IF remaining > 0 THEN --read extension list
+&ifdef NO_JAVA
+    --LET ext=chan.readBinaryString(remaining)
+    LET ext=chan.readOctets(remaining)
+    DISPLAY "ext:",ext
+&else
     LET ba = MyByteArray.create(remaining)
     CALL dIn.readFully(ba)
+&endif
     LET remaining = 0
   END IF
   CALL log(
@@ -4110,12 +4465,21 @@ FUNCTION handleFTGetFile(vmidx INT, dIn DataInputStream, num INT, remaining INT)
   RETURN remaining
 END FUNCTION
 
-FUNCTION handleFTAck(vmidx INT, dIn DataInputStream, num INT, remaining INT)
+FUNCTION handleFTAck(vmidx INT, num INT, remaining INT)
   DEFINE numBytes, lastQ INT
   DEFINE name STRING
   DEFINE found BOOLEAN
   DEFINE ftg FTGetImage
+&ifdef NO_JAVA
+  DEFINE chan base.Channel
+  LET chan=_v[vmidx].chan
+  CALL getNameC(chan) RETURNING name, numBytes
+&else
+  DEFINE dIn DataInputStream
+  DEFINE ba MyByteArray
+  LET dIn=_v[vmidx].dIn
   CALL getNameC(dIn) RETURNING name, numBytes
+&endif
   LET remaining = remaining - numBytes
   CALL log(
       SFMT("handleFTAck name:'%1',num:%2,vmVersion:%3",
@@ -4142,10 +4506,17 @@ FUNCTION handleFTAck(vmidx INT, dIn DataInputStream, num INT, remaining INT)
   RETURN remaining
 END FUNCTION
 
-FUNCTION handleFTBody(vmidx INT, dIn DataInputStream, num INT, remaining INT)
+FUNCTION handleFTBody(vmidx INT, num INT, remaining INT)
+&ifdef NO_JAVA
+  DEFINE chan base.Channel
+  LET chan=_v[vmidx].chan
+&else
+  DEFINE dIn DataInputStream
   DEFINE ba MyByteArray
+  LET dIn=_v[vmidx].dIn
   LET ba = MyByteArray.create(remaining)
   CALL dIn.readFully(ba)
+&endif
   CALL log(SFMT("FTbody for num:%1", num))
   CALL log(
       SFMT("  _v[vmidx].writeNum:%1,_v[vmidx].writeNum2:%2",
@@ -4154,22 +4525,38 @@ FUNCTION handleFTBody(vmidx INT, dIn DataInputStream, num INT, remaining INT)
   IF num > 0 THEN
     MYASSERT(_v[vmidx].writeCPut IS NOT NULL)
     --LET written = _v[vmidx].writeCPut.write(buf)
+&ifdef NO_JAVA
+    CALL copyBytes(chan, _v[vmidx].writeCPut,remaining)
+&else
     CALL _v[vmidx].writeCPut.write(ba)
+&endif
     --DISPLAY "written FTPutfile:", written
   ELSE
     MYASSERT(_v[vmidx].writeC IS NOT NULL)
     --LET written = _v[vmidx].writeC.write(buf)
+&ifdef NO_JAVA
+    CALL copyBytes(chan, _v[vmidx].writeC,remaining)
+&else
     CALL _v[vmidx].writeC.write(ba)
+&endif
     --DISPLAY "written:", written
   END IF
   RETURN 0
 END FUNCTION
 
-FUNCTION handleFTStatus(vmidx INT, dIn DataInputStream, num INT, remaining INT)
+FUNCTION handleFTStatus(vmidx INT, num INT, remaining INT)
   DEFINE fstatus INT
   DEFINE found BOOLEAN
   DEFINE ftg FTGetImage
+&ifdef NO_JAVA
+  DEFINE chan base.Channel
+  LET chan=_v[vmidx].chan
+  LET fstatus = chan.readNetInt32()
+&else
+  DEFINE dIn DataInputStream
+  LET dIn=_v[vmidx].dIn
   LET fstatus = ntohl(dIn.readInt())
+&endif
   LET remaining = remaining - 4
   CALL log(SFMT("handleFTStatus for num:%1,status:%2", num, fstatus))
   CASE fstatus
@@ -4238,11 +4625,20 @@ FUNCTION handleFTEof(vmidx INT, num INT)
   END IF
 END FUNCTION
 
-FUNCTION handleFT(vmidx INT, dIn DataInputStream, dataSize INT)
+FUNCTION handleFT(vmidx INT, dataSize INT)
   DEFINE ftType TINYINT
   DEFINE num, remaining INT
+&ifdef NO_JAVA
+  DEFINE chan base.Channel
+  LET chan=_v[vmidx].chan
+  LET ftType = chan.readNetInt8()
+  LET num = chan.readNetInt32()
+&else
+  DEFINE dIn DataInputStream
+  LET dIn=_v[vmidx].dIn
   LET ftType = dIn.readByte()
   LET num = ntohl(dIn.readInt())
+&endif
   LET remaining = dataSize - 5
   CALL log(
       SFMT("handleFT ftType:%1,num:%2, remaining:%3",
@@ -4251,15 +4647,15 @@ FUNCTION handleFT(vmidx INT, dIn DataInputStream, dataSize INT)
           remaining))
   CASE ftType
     WHEN FTPutFile
-      LET remaining = handleFTPutFile(vmidx, dIn, num, remaining)
+      LET remaining = handleFTPutFile(vmidx, num, remaining)
     WHEN FTGetFile
-      LET remaining = handleFTGetFile(vmidx, dIn, num, remaining)
+      LET remaining = handleFTGetFile(vmidx, num, remaining)
     WHEN FTAck
-      LET remaining = handleFTAck(vmidx, dIn, num, remaining)
+      LET remaining = handleFTAck(vmidx, num, remaining)
     WHEN FTBody
-      LET remaining = handleFTBody(vmidx, dIn, num, remaining)
+      LET remaining = handleFTBody(vmidx, num, remaining)
     WHEN FTStatus
-      LET remaining = handleFTStatus(vmidx, dIn, num, remaining)
+      LET remaining = handleFTStatus(vmidx, num, remaining)
     WHEN FTEof
       CALL handleFTEof(vmidx, num)
     OTHERWISE
@@ -4581,27 +4977,47 @@ END FUNCTION
 
 FUNCTION sendGetImageOrAck(
     vmidx INT, num INT, fileName STRING, getImage BOOLEAN)
-  DEFINE fileNameBuf ByteBuffer
   DEFINE pktlen, extlen, len INT
   DEFINE ext STRING
-  DEFINE pkt ByteBuffer
   DEFINE b0 TINYINT
+&ifdef NO_JAVA
+  DEFINE chan base.Channel
+&else
+  DEFINE pkt ByteBuffer
+  DEFINE fileNameBuf ByteBuffer
   DEFINE extBuf ByteBuffer
   LET fileNameBuf = _encoder.encode(CharBuffer.wrap(fileName))
   LET len = fileNameBuf.limit()
+  MYASSERT(len == fileName.getLength())
+&endif
   CALL log(
       SFMT("sendGetImageOrAck num:%1,fileName:'%2',getImage:%3",
           num, fileName, getImage))
-  MYASSERT(len == fileName.getLength())
+  LET len=fileName.getLength()
   LET pktlen = 1 + 2 * size_i + len; --1st byte FT instruction
   IF getImage THEN --append imagelist
     LET ext = ".png;.PNG;.gif;.GIF;.jpg;.JPG;.tif;.TIF;.bmp;.BMP"
     LET extlen = ext.getLength()
     LET pktlen = pktlen + size_i + extlen + 1;
   END IF
+  LET b0 = IIF(getImage, FTGetFile, FTAck)
+&ifdef NO_JAVA
+  LET chan=_v[vmidx].chan
+  MYASSERT(chan IS NOT NULL AND _channels.search(NULL,chan)>0 )
+  CALL writeEncapsHeader(chan,TFileTransfer,pktlen)
+  CALL chan.writeNetInt8(b0)
+  CALL chan.writeNetInt32(num)
+  CALL chan.writeNetInt32(len)
+  CALL chan.writeBinaryString(fileName)
+  IF getImage THEN
+    CALL chan.writeNetInt32(extlen)
+    CALL chan.writeBinaryString(ext)
+    CALL chan.writeNetInt8(0) --terminating 0
+  END IF
+  CALL chan.flush()
+&else
   LET pkt = ByteBuffer.allocate(pktlen)
   --DISPLAY "pktlen:", pktlen
-  LET b0 = IIF(getImage, FTGetFile, FTAck)
   CALL pkt.put(b0) --put first byte
   CALL pkt.putInt(num) --ByteBuffers putInt is always in network byte order
   CALL pkt.putInt(len) --so no htonl is needed
@@ -4615,8 +5031,10 @@ FUNCTION sendGetImageOrAck(
     CALL pkt.put(b0) --terminating 0
   END IF
   CALL encapsMsgToVM(vmidx, TFileTransfer, pkt)
+&endif
 END FUNCTION
 
+&ifndef NO_JAVA
 FUNCTION sendBody(vmidx INT, num INT, buf ByteBuffer)
   DEFINE pkt ByteBuffer
   DEFINE pktlen INT
@@ -4629,33 +5047,72 @@ FUNCTION sendBody(vmidx INT, num INT, buf ByteBuffer)
   CALL pkt.put(buf)
   CALL encapsMsgToVM(vmidx, TFileTransfer, pkt)
 END FUNCTION
+&endif
 
 FUNCTION sendEof(vmidx INT, num INT)
-  DEFINE pkt ByteBuffer
   DEFINE pktlen INT
   DEFINE b0 TINYINT
+&ifdef NO_JAVA
+  DEFINE chan base.Channel
+&else
+  DEFINE pkt ByteBuffer
+&endif
   LET pktlen = 1 + size_i
-  LET pkt = ByteBuffer.allocate(pktlen)
   LET b0 = FTEof
+&ifdef NO_JAVA
+  LET chan=_v[vmidx].chan
+  CALL writeEncapsHeader(chan,TFileTransfer,pktlen)
+  CALL chan.writeNetInt8(b0)
+  CALL chan.writeNetInt32(num)
+  CALL chan.flush()
+&else
+  LET pkt = ByteBuffer.allocate(pktlen)
   CALL pkt.put(b0) --put first byte
   CALL pkt.putInt(num)
   CALL encapsMsgToVM(vmidx, TFileTransfer, pkt)
+&endif
 END FUNCTION
 
 FUNCTION sendFTStatus(vmidx INT, num INT, code INT)
-  DEFINE pkt ByteBuffer
   DEFINE pktlen INT
   DEFINE b0 TINYINT
+&ifdef NO_JAVA
+  DEFINE chan base.Channel
+&else
+  DEFINE pkt ByteBuffer
+&endif
   LET pktlen = 1 + 2 * size_i
-  LET pkt = ByteBuffer.allocate(pktlen)
   LET b0 = FTStatus
+&ifdef NO_JAVA
+  LET chan=_v[vmidx].chan
+  CALL writeEncapsHeader(chan,TFileTransfer,pktlen)
+  CALL chan.writeNetInt8(b0)
+  CALL chan.writeNetInt32(num)
+  CALL chan.writeNetInt32(code)
+  CALL chan.flush()
+&else
+  LET pkt = ByteBuffer.allocate(pktlen)
   CALL pkt.put(b0)
   CALL pkt.putInt(num)
   CALL pkt.putInt(code)
   CALL encapsMsgToVM(vmidx, TFileTransfer, pkt)
+&endif
+END FUNCTION
+
+FUNCTION writeEncapsHeader(chan base.Channel, type TINYINT, len INT)
+ CALL chan.writeNetInt32(len)
+ CALL chan.writeNetInt32(len)
+ CALL chan.writeNetInt8(type)
 END FUNCTION
 
 FUNCTION writeToVMEncaps(vmidx INT, cmd STRING)
+&ifdef NO_JAVA
+ DEFINE chan base.Channel
+ LET chan=_v[vmidx].chan
+ CALL writeEncapsHeader(chan,TAuiData,cmd.getLength())
+ CALL chan.writeBinaryString(cmd)
+ CALL chan.flush()
+&else
   DEFINE b ByteBuffer
   --CALL setWait(vmidx)
   LET b = _encoder.encode(CharBuffer.wrap(cmd))
@@ -4663,8 +5120,10 @@ FUNCTION writeToVMEncaps(vmidx INT, cmd STRING)
   --encode() doesn't set position()
   CALL b.position(b.limit()) --because encapsMsgToVM calls flip()
   CALL encapsMsgToVM(vmidx, TAuiData, b)
+&endif
 END FUNCTION
 
+&ifndef NO_JAVA
 FUNCTION encapsMsgToVM(vmidx INT, type TINYINT, pkt ByteBuffer)
   DEFINE buf ByteBuffer
   DEFINE whole_len INT
@@ -4682,6 +5141,7 @@ FUNCTION encapsMsgToVM(vmidx INT, type TINYINT, pkt ByteBuffer)
   CALL buf.flip()
   CALL writeChannel(vmidx, buf)
 END FUNCTION
+&endif
 
 FUNCTION clearCache()
   DEFINE cacheDir STRING
@@ -5240,10 +5700,15 @@ FUNCTION nodeDesc(n om.DomNode)
 END FUNCTION
 
 FUNCTION genSID(short BOOLEAN)
+  DEFINE s STRING
+&ifdef NO_JAVA
+  UNUSED_VAR(short)
+  CALL util.Math.srand()
+  LET s=util.Math.rand(100000)
+&else
   DEFINE rand SecureRandom
   DEFINE barr MyByteArray
   DEFINE enc Encoder
-  DEFINE s STRING
   DEFINE numdigits INT
   LET rand = SecureRandom.create()
   LET numdigits = IIF(short, 20, 25)
@@ -5254,6 +5719,7 @@ FUNCTION genSID(short BOOLEAN)
   LET s = replace(s, ".", "_")
   LET s = replace(s, ":", "C")
   LET s = replace(s, "-", "A")
+&endif
   CALL log(SFMT("genSID:%1", s))
   RETURN s
 END FUNCTION
