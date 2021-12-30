@@ -13,6 +13,8 @@ set FGL_LENGTH_SEMANTICS=BYTE
 set LANG=.fglutf8
 CALL myfglcomp mygetopt
 IF %errorlevel% NEQ 0 GOTO myend
+CALL myfglcomp URI
+IF %errorlevel% NEQ 0 GOTO myend
 CALL myfglcomp fgljp
 IF %errorlevel% NEQ 0 GOTO myend
 popd
