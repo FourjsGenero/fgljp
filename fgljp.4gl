@@ -891,7 +891,7 @@ FUNCTION setAppCookie(x INT, path STRING)
   LET surl = "http://", _localhost, path
   CALL getURLQueryDict(surl) RETURNING dict, url
   LET urlpath = url.getPath()
-  DISPLAY "urlpath:", urlpath
+  --DISPLAY "urlpath:", urlpath
   IF dict.contains("monitor") AND urlpath.equals("/gbc/index.html") THEN
     CALL log(SFMT("setAppCookie: monitor seen,appCookie=%1", _s[x].appCookie))
   ELSE
@@ -2030,7 +2030,7 @@ FUNCTION writeToVMNoEncaps(vmidx INT, s STRING)
   MYASSERT(_channels.search(NULL, chan) > 0)
   CALL chan.writeNoNL(s)
   CALL chan.flush()
-  DISPLAY SFMT("writeToVMNoEncaps vmidx:%1 s:'%2'", vmidx, s)
+  --DISPLAY SFMT("writeToVMNoEncaps vmidx:%1 s:'%2'", vmidx, s)
 &else
   DEFINE jstring java.lang.String
   LET jstring = s
