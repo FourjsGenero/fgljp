@@ -533,6 +533,7 @@ console.log("gbc_fgljp begin");
     //if ((!_isGBC4) || (_isGBC4 && _gbcMinor_PL<"00.05")) {
       patchWrapResourcePath(classes); //workaround GBC-3240,GBC-3105
     //}
+    patchSendUpload(classes);
     if (_isGBC4 && !haveDebuggerFCs) {
       patchNavMan(classes); //add some helpers
     }
@@ -555,6 +556,37 @@ console.log("gbc_fgljp begin");
       let returnPath = startPath + path;
       //console.log("returnPath:"+returnPath);
       return returnPath;
+    }
+  }
+
+  function patchSendUpload(classes) {
+    var FileInputWidgetP = classes.FileInputWidget.prototype;
+    FileInputWidgetP.send = function(filename, url, callback, errorCallback, progressHandler) {
+      var thefile = null;
+      var files = this._files ? this._files :
+                  this._element.querySelector("form").file.files;
+      for (var i = 0; i < files.length; ++i) {
+        var file = files[i];
+        if (file.name === filename) {
+          thefile = file;
+          break;
+        }
+      }
+      if (thefile === null ) {
+        errorCallback();
+        return;
+      }
+      var request = new XMLHttpRequest();
+      request.onload = function(event) {
+         callback();
+      }.bind(this);
+      request.onerror = function() {
+         errorCallback();
+      };
+      request.open("POST", url);
+      request.setRequestHeader("Content-Type",thefile.type);
+      request.upload.addEventListener("progress", progressHandler.bind(this));
+      request.send(thefile);
     }
   }
 

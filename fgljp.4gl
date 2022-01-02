@@ -2565,14 +2565,14 @@ FUNCTION handleLine(isVM BOOLEAN, v INT, c INT, line STRING)
   RETURN FALSE, isVM, v
 END FUNCTION
 
-FUNCTION createFO(path STRING)
+FUNCTION createFO(path STRING) RETURNS(base.Channel, STRING)
   DEFINE fo base.Channel
   IF path.getIndexOf("/", 1) == 1 THEN
     LET path = ".", path
   END IF
   LET fo = base.Channel.create()
   CALL fo.openFile(path, "w")
-  RETURN fo
+  RETURN fo, path
 END FUNCTION
 
 FUNCTION copyBytes(src base.Channel, dest base.Channel, numBytes INT)
@@ -2584,9 +2584,10 @@ FUNCTION handleSimplePost(x INT, path STRING)
   DEFINE chan base.Channel
   DEFINE fo base.Channel
   LET chan = _s[x].chan
-  LET fo = createFO(path)
+  CALL createFO(path) RETURNING fo, path
   CALL copyBytes(chan, fo, _s[x].contentLen)
   CALL fo.close()
+  MYASSERT(os.Path.size(path) == _s[x].contentLen)
 END FUNCTION
 
 FUNCTION handleWaitContent(x INT)
@@ -2602,11 +2603,8 @@ FUNCTION handleWaitContent(x INT)
     --DISPLAY "  body=", _s[x].body
   ELSE
     LET ct = _s[x].contentType
-    IF ct.getIndexOf("multipart/form-data", 1) > 0 THEN
-      DISPLAY "Unhandled: multipart upload"
-    ELSE
-      CALL handleSimplePost(x, path)
-    END IF
+    MYASSERT(ct.getIndexOf("multipart/form-data", 1) == 0)
+    CALL handleSimplePost(x, path)
   END IF
   CALL httpHandler(x)
 END FUNCTION
@@ -3450,32 +3448,21 @@ FUNCTION makeTempName()
 END FUNCTION
 
 FUNCTION sendFileToVM(vmidx INT, num INT, name STRING)
-&ifdef NO_JAVA
-  --TODO
-  UNUSED_VAR(name)
-  CALL sendFTStatus(vmidx, num, FStErrSource)
-&else
-  DEFINE buf ByteBuffer
-  DEFINE bytesRead INT
-  DEFINE chan FileChannel
-  LET chan = createInputStream(name)
-  IF chan IS NULL THEN
+  DEFINE ch base.Channel
+  DEFINE size INT
+  LET ch = base.Channel.create()
+  TRY
+    CALL ch.openFile(name, "r")
+  CATCH
     CALL sendFTStatus(vmidx, num, FStErrSource)
     RETURN
-  END IF
+  END TRY
+  LET size = os.Path.size(name)
   CALL sendAck(vmidx, num, name)
-  LET buf = ByteBuffer.allocate(30000)
-  WHILE (bytesRead := chan.read(buf)) > 0
-    --DISPLAY "bytesRead:", bytesRead
-    CALL buf.flip()
-    CALL sendBody(vmidx, num, buf)
-    CALL buf.position(0)
-    CALL buf.limit(30000)
-  END WHILE
-  CALL chan.close()
+  CALL sendBody(vmidx, num, ch, size)
+  CALL ch.close()
   CALL sendEof(vmidx, num)
   CALL setWait(vmidx)
-&endif
 END FUNCTION
 
 FUNCTION getWriteNum(vmidx INT)
@@ -3503,7 +3490,6 @@ FUNCTION handleFTPutFile(vmidx INT, num INT, remaining INT)
   DEFINE chan base.Channel
   LET chan = _v[vmidx].chan
   LET fileSize = chan.readNetInt32()
-  LET num = chan.readNetInt32()
   CALL getNameC(chan) RETURNING name, numBytes
   LET remaining = remaining - 4 - numBytes
 
@@ -3601,7 +3587,7 @@ END FUNCTION
 FUNCTION handleFTBody(vmidx INT, num INT, remaining INT)
   DEFINE chan base.Channel
   LET chan = _v[vmidx].chan
-  CALL log(SFMT("FTbody for num:%1", num))
+  CALL log(SFMT("FTbody for num:%1,remaining:%2", num, remaining))
   CALL log(
       SFMT("  _v[vmidx].writeNum:%1,_v[vmidx].writeNum2:%2",
           _v[vmidx].writeNum, _v[vmidx].writeNum2))
@@ -4070,20 +4056,18 @@ FUNCTION sendGetImageOrAck(
   CALL chan.flush()
 END FUNCTION
 
-&ifndef NO_JAVA
-FUNCTION sendBody(vmidx INT, num INT, buf ByteBuffer)
-  DEFINE pkt ByteBuffer
+FUNCTION sendBody(vmidx INT, num INT, ichan base.Channel, numBytes INT)
   DEFINE pktlen INT
+  DEFINE chan base.Channel
   DEFINE b0 TINYINT
-  LET pktlen = 1 + size_i + buf.limit()
-  LET pkt = ByteBuffer.allocate(pktlen)
+  LET pktlen = 1 + size_i + numBytes
+  LET chan = _v[vmidx].chan
+  CALL writeEncapsHeader(chan, TFileTransfer, pktlen)
   LET b0 = FTBody
-  CALL pkt.put(b0) --put first byte
-  CALL pkt.putInt(num) --ByteBuffers putInt is always in network byte order
-  CALL pkt.put(buf)
-  CALL encapsMsgToVM(vmidx, TFileTransfer, pkt)
+  CALL chan.writeNetInt8(b0)
+  CALL chan.writeNetInt32(num)
+  CALL copyBytes(ichan, chan, numBytes)
 END FUNCTION
-&endif
 
 FUNCTION sendEof(vmidx INT, num INT)
   DEFINE pktlen INT
