@@ -2,16 +2,9 @@ IMPORT os
 IMPORT util
 IMPORT FGL fgljp
 IMPORT FGL mygetopt
-IMPORT JAVA java.lang.Thread
-IMPORT JAVA java.lang.ProcessBuilder
-IMPORT JAVA java.lang.ProcessBuilder.Redirect
-IMPORT JAVA java.lang.Process
-IMPORT JAVA java.lang.String
-IMPORT JAVA java.io.InputStreamReader
-IMPORT JAVA java.io.BufferedReader
 &define MYASSERT(x) IF NOT NVL(x,0) THEN CALL fgljp.myErr("ASSERTION failed in line:"||__LINE__||":"||#x) END IF
 &define MYASSERT_MSG(x,msg) IF NOT NVL(x,0) THEN CALL fgljp.myErr("ASSERTION failed in line:"||__LINE__||":"||#x||","||msg) END IF
-TYPE SArray ARRAY[] OF java.lang.String
+--TYPE SArray ARRAY[] OF java.lang.String
 DEFINE _verbose BOOLEAN
 DEFINE _opt_tunnelonly BOOLEAN
 DEFINE _opt_ssh_bash BOOLEAN
@@ -24,7 +17,7 @@ DEFINE _opt_fgltty_pw STRING --fgltty password
 DEFINE _opt_fgltty_load STRING --fgltty load config
 DEFINE _fglfeid, _fglfeid2 STRING
 DEFINE _remotePort INT
-CONSTANT ALLO = "Allocated port "
+PUBLIC CONSTANT ALLO = "Allocated port "
 CONSTANT MAXLINES = 10
 MAIN
   DEFINE entries fgljp.TStartEntries
@@ -192,7 +185,8 @@ FUNCTION waitOpen(fname STRING)
       EXIT FOR
     CATCH
       --DISPLAY "waitOpen:",i," ",err_get(status)
-      CALL Thread.sleep(100)
+      --CALL Thread.sleep(100)
+      SLEEP 1
     END TRY
   END FOR
   MYASSERT_MSG(opened == TRUE, sfmt("Can't open %1", fname))
@@ -208,49 +202,13 @@ FUNCTION waitReadLine(ch base.Channel, fname STRING) RETURNS STRING
       --DISPLAY line
       RETURN line
     ELSE
-      CALL Thread.sleep(100)
+      --CALL Thread.sleep(100)
+      SLEEP 1
     END IF
   END WHILE
   --never reached
   --CALL fgljp.myErr(SFMT("Could not read a line from %1", fname))
   RETURN NULL
-END FUNCTION
-
-FUNCTION fArr2jArr(farr DYNAMIC ARRAY OF STRING) RETURNS SArray
-  DEFINE sarr SArray
-  DEFINE i INT
-  LET sarr = SArray.create(farr.getLength())
-  FOR i = 1 TO farr.getLength()
-    LET sarr[i] = farr[i]
-  END FOR
-  RETURN sarr
-END FUNCTION
-
---uses Java API's to redirect the ssh stderr to us to capture the
---port forwarding output
---the Process is used later on to be able to terminate it
-FUNCTION start_process(cmds DYNAMIC ARRAY OF STRING) RETURNS(STRING, Process)
-  DEFINE is InputStreamReader
-  DEFINE br BufferedReader
-  DEFINE pb ProcessBuilder
-  DEFINE proc Process
-  DEFINE line STRING
-  LET pb = ProcessBuilder.create(fArr2jArr(cmds))
-  --ensure ssh reads from our stdin
-  CALL pb.redirectInput(ProcessBuilder.Redirect.INHERIT)
-  --and writes to our stdout (Passwd etc)
-  CALL pb.redirectOutput(ProcessBuilder.Redirect.INHERIT)
-  LET proc = pb.start()
-  LET is = InputStreamReader.create(proc.getErrorStream())
-  LET br = BufferedReader.create(is)
-  WHILE TRUE
-    LET line = br.readLine()
-    --CALL printStderr(sfmt("start_process:'%1'",line))
-    IF line.getIndexOf(ALLO, 1) > 0 THEN
-      EXIT WHILE
-    END IF
-  END WHILE
-  RETURN line, proc
 END FUNCTION
 
 FUNCTION start_fgljp() RETURNS(fgljp.TStartEntries, STRING)
@@ -274,8 +232,9 @@ FUNCTION start_fgljp() RETURNS(fgljp.TStartEntries, STRING)
   RUN cmd WITHOUT WAITING
   LET ch = waitOpen(tmp)
   LET line = waitReadLine(ch, tmp)
-  DISPLAY "start_fgljp:", line
+  --DISPLAY "start_fgljp:", line
   CALL util.JSON.parse(line, entries)
+  --DISPLAY "start_fgljp entries:",util.JSON.stringify(entries)
   RETURN entries.*, tmp
 END FUNCTION
 
@@ -384,14 +343,33 @@ FUNCTION start_fgltty(localPort INT)
   CALL ch.close()
 END FUNCTION
 
-FUNCTION start_ssh(localPort INT)
-  DEFINE tmp, tmps, line, cmd STRING
+--extracts the pid from the wmic list
+FUNCTION getpid_from_wmic(cmd STRING, exe STRING)
+  DEFINE wmicmd, line STRING
+  DEFINE idx, cmdpid INT
   DEFINE ch base.Channel
-  DEFINE idx, idx2, aLen, i INT
+  LET ch = base.Channel.create()
+  LET wmicmd =
+      SFMT('wmic path win32_process where "caption=\'%1\'" get CommandLine,Processid',
+          exe)
+  CALL ch.openPipe(wmicmd, "r")
+  WHILE (line := ch.readLine()) IS NOT NULL
+    IF (idx := line.getIndexOf(cmd, 1)) > 0 THEN
+      LET idx = idx + cmd.getLength()
+      --DISPLAY "found cmd:'",line,"',idx:",idx
+      LET cmdpid = line.subString(idx, line.getLength()).trimWhiteSpace()
+      --DISPLAY sfmt("cmdpid:%1",cmdpid)
+    END IF
+  END WHILE
+  CALL ch.close()
+  RETURN cmdpid
+END FUNCTION
+
+FUNCTION start_ssh(localPort INT)
+  DEFINE tmp, tmps, line, args, cmd, cmdsh STRING
+  DEFINE ch, ch2 base.Channel
+  DEFINE i, cmdpid_ssh INT
   DEFINE rFGLSERVER STRING
-  DEFINE cmdarr DYNAMIC ARRAY OF STRING
-  DEFINE proc Process
-  LET aLen = length(ALLO)
   LET tmp = fgljp.makeTempName()
   MYASSERT(NOT os.Path.exists(tmp))
   --we use the 0 remote port and let this connection open until we die
@@ -400,19 +378,29 @@ FUNCTION start_ssh(localPort INT)
   IF fgljp.isWin() THEN
     --unfortunately there isn't the master control socket property
     --in the standard Win32/64 ssh client
-    --fglrun hangs on a popen() for this process, so we use Java in this
-    --case to start and read from the process...
-    --furthermore the -4 (IPv4) flag is necessary to make the relay to localhost happen
-    --note 'localhost' is much slower than '127.0.0.1' when forwarding
-    LET cmd = SFMT('["ssh","-4","-N","-R","0:127.0.0.1:%1"]', localPort)
-    CALL util.JSON.parse(cmd, cmdarr)
+    --SendEnv with the pid is only set to have a match pattern
+    LET args =
+        SFMT("-4 -N -R 0:127.0.0.1:%1 -o SendEnv=pid%2",
+            localPort, fgl_getpid())
     IF _opt_ssh_port IS NOT NULL THEN
-      LET cmdarr[cmdarr.getLength() + 1] = "-p"
-      LET cmdarr[cmdarr.getLength() + 1] = _opt_ssh_port
+      LET args = SFMT("%1 -p %2", args, _opt_ssh_port)
     END IF
-    LET cmdarr[cmdarr.getLength() + 1] = _opt_ssh_host
-    --DISPLAY util.JSON.stringify(cmdarr)
-    CALL start_process(cmdarr) RETURNING line, proc
+    LET args = SFMT("%1 %2", args, _opt_ssh_host)
+    LET cmd = SFMT("ssh %1", args)
+    LET cmdsh = SFMT("%1 2>&1", cmd)
+    LET ch2 = base.Channel.create()
+    CALL ch2.openPipe(cmdsh, "r")
+    WHILE (line := ch2.readLine()) IS NOT NULL
+      IF line.getIndexOf(ALLO, 1) > 0 THEN
+        EXIT WHILE
+      ELSE
+        CALL printStderr(line)
+      END IF
+    END WHILE
+    --fglrun hangs on a close of the ch2 pipe, so we need
+    --to get the ssh pid to kill it before the pipe is closed
+    LET cmdpid_ssh = getpid_from_wmic(args, "ssh.exe")
+    --LET cmdpid=getpid_from_wmic(cmdsh, "cmd.exe")
   ELSE
     --compute a master control socket name
     LET tmps = fgljp.makeTempName()
@@ -432,13 +420,10 @@ FUNCTION start_ssh(localPort INT)
         CALL printStderr(line)
       END IF
     END FOR
+    --DISPLAY "ssh port forward line:", line
   END IF
-  DISPLAY "ssh port forward line:", line
   DEFER INTERRUPT --prevent Ctrl-c bailing us out
-  MYASSERT_MSG((idx := line.getIndexOf(ALLO, 1)) > 0, sfmt("Can't get allocated port out of '%1'", line))
-  MYASSERT((idx2 := line.getIndexOf(" ", idx + aLen + 1)) > 0)
-  LET _remotePort = line.subString(idx + aLen + 1, idx2 - 1)
-  MYASSERT(_remotePort IS NOT NULL)
+  LET _remotePort = extractAllocatedPort(line)
   LET rFGLSERVER = SFMT("localhost:%1", _remotePort - 6400)
   IF _opt_tunnelonly THEN
     CALL menu_tunnelonly(rFGLSERVER)
@@ -473,16 +458,39 @@ FUNCTION start_ssh(localPort INT)
   END IF
   --DISPLAY "terminate port forwarder ssh"
   IF fgljp.isWin() THEN
-    CALL proc.destroyForcibly()
+    CALL killWinPid(cmdpid_ssh)
+    --CALL killWinPid(cmdpid)
+    CALL ch2.close()
   ELSE
     CALL ch.close()
     LET cmd =
         IIF(_opt_ssh_port IS NOT NULL, SFMT("ssh -p %1", _opt_ssh_port), "ssh")
     --close the master control connection
     RUN SFMT("%1 -S %2 -O exit %3", cmd, tmps, _opt_ssh_host)
-    CALL os.Path.delete(tmp) RETURNING status
     CALL os.Path.delete(tmps) RETURNING status
   END IF
+  CALL os.Path.delete(tmp) RETURNING status
+END FUNCTION
+
+FUNCTION killWinPid(pid INT)
+  DEFINE cmd STRING
+  DEFINE code INT
+  --LET cmd=SFMT("taskkill /F /PID %1 >NUL 2>&1",pid)
+  LET cmd = SFMT("taskkill /F /PID %1", pid)
+  RUN cmd RETURNING code
+  IF code THEN
+    DISPLAY "taskkill returns:", code
+  END IF
+END FUNCTION
+
+FUNCTION extractAllocatedPort(line STRING) RETURNS INT
+  DEFINE idx, idx2, aLen, remotePort INT
+  LET aLen = length(ALLO)
+  MYASSERT_MSG((idx := line.getIndexOf(ALLO, 1)) > 0, sfmt("Can't get allocated port out of '%1'", line))
+  MYASSERT((idx2 := line.getIndexOf(" ", idx + aLen + 1)) > 0)
+  LET remotePort = line.subString(idx + aLen + 1, idx2 - 1)
+  MYASSERT(remotePort IS NOT NULL)
+  RETURN remotePort
 END FUNCTION
 
 FUNCTION copy2clip(txt STRING)

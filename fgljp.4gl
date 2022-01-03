@@ -235,7 +235,7 @@ MAIN
     LET port = IIF(_opt_port IS NOT NULL, parseInt(_opt_port), 6400)
   END IF
   LET port = findFreePortL(IIF(port == 0, 1025, port), NOT _opt_any)
-  DISPLAY "port:", port
+  --DISPLAY "port:", port
   LET _server = base.Channel.create()
   CALL _server.openServerSocket("127.0.0.1", port, "u")
   IF _opt_program IS NULL THEN
@@ -281,11 +281,11 @@ FUNCTION findFreePortL(startport, local)
   FOR port = startport TO 65535
     TRY
       CALL ch.openServerSocket(IIF(local, "127.0.0.1", NULL), port, "u")
-      DISPLAY "bound port ok:", port
+      --DISPLAY "bound port ok:", port
       CALL ch.close() --chance is high that we get this port
       RETURN port
     CATCH
-      DISPLAY SFMT("findFreePort: can't bind port %1:%2", port, err_get(status))
+      --DISPLAY SFMT("findFreePort: can't bind port %1:%2", port, err_get(status))
     END TRY
   END FOR
   CALL myErr(
@@ -2571,7 +2571,7 @@ FUNCTION createFO(path STRING) RETURNS(base.Channel, STRING)
     LET path = ".", path
   END IF
   LET fo = base.Channel.create()
-  CALL fo.openFile(path, "w")
+  CALL fo.openFile(path, "wb")
   RETURN fo, path
 END FUNCTION
 
@@ -2846,7 +2846,7 @@ FUNCTION createOutputStream(
   --CALL log(sfmt("createOutputStream:'%1'",fn))
   TRY
     LET fc = base.Channel.create()
-    CALL fc.openFile(fn, "w")
+    CALL fc.openFile(fn, "wb")
     IF putfile THEN
       LET _v[vmidx].writeCPut = fc
     ELSE
