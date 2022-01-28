@@ -259,6 +259,7 @@ DEFINE _server ServerSocketChannel
 DEFINE _didAcceptOnce BOOLEAN
 DEFINE _selector Selector
 DEFINE _fglserver STRING
+DEFINE _fglfeid STRING
 
 --Parser state record
 TYPE TclP RECORD
@@ -480,6 +481,10 @@ FUNCTION setup_program(priv STRING, pub STRING, port INT)
   CALL fgl_setenv("FGL_PUBLIC_IMAGEPATH", ".")
   CALL fgl_setenv("FGL_PRIVATE_URL_PREFIX", priv)
   CALL fgl_setenv("FGL_PUBLIC_URL_PREFIX", pub)
+  IF _fglfeid IS NULL THEN
+    LET _fglfeid=genSID(true)
+    CALL fgl_setenv("_FGLFEID",_fglfeid)
+  END IF
   --CALL fgl_setenv("FGLGUIDEBUG", "1")
   --CALL fgl_setenv("FGLGUIDEBUG", "1")
   --should work on both Win and Unix
