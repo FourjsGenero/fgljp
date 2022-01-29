@@ -163,7 +163,10 @@ TYPE TVMRec RECORD
   writeC FileOutputStream,
   procId STRING, --VM procId
   procIdParent STRING, --VM procIdParent
+  procIdParentWaiting STRING, --VM procIdParentWaiting
   procIdWaiting STRING, --VM procIdWaiting
+  programName STRING,
+  frontEndID STRING,
   sessId STRING, --session Id
   didSendVMClose BOOLEAN,
   FTs FTList, --list of running file transfers
@@ -260,6 +263,7 @@ DEFINE _didAcceptOnce BOOLEAN
 DEFINE _selector Selector
 DEFINE _fglserver STRING
 DEFINE _fglfeid STRING
+DEFINE _numWaitingParent INT
 
 --Parser state record
 TYPE TclP RECORD
@@ -2234,7 +2238,7 @@ END FUNCTION
 
 FUNCTION handleVMMetaSel(c INT, line STRING)
   DEFINE pp, procIdWaiting, sessId, encaps, compression, rtver STRING
-  DEFINE ftV, ftFC, feid, env_feid STRING
+  DEFINE ftV, ftFC, feid, env_feid, name STRING
   DEFINE vmidx, ppidx, waitIdx INT
   DEFINE children TStringArr
   --allocate a new VM index
@@ -2249,6 +2253,7 @@ FUNCTION handleVMMetaSel(c INT, line STRING)
     CALL closeSel(c)
     RETURN -1
   END IF
+  LET _v[vmidx].frontEndID = feid
   LET _currIdx = -vmidx
   --assign matching members from _s to _v
   LET _v[vmidx].active = TRUE
@@ -2263,6 +2268,9 @@ FUNCTION handleVMMetaSel(c INT, line STRING)
   LET _v[vmidx].VmCmd = line
   LET _v[vmidx].state = IIF(_opt_program IS NOT NULL, S_ACTIVE, S_WAITFORFT)
   LET _v[vmidx].isMeta = TRUE
+  IF (name := extractMetaVar(line, "programName", FALSE)) IS NOT NULL THEN
+    LET _v[vmidx].programName = name
+  END IF
   CALL log(SFMT("handleVMMetaSel:%1", line))
   LET encaps = extractMetaVar(line, "encapsulation", TRUE)
   LET compression = extractMetaVar(line, "compression", TRUE)
@@ -2316,6 +2324,8 @@ FUNCTION handleVMMetaSel(c INT, line STRING)
       --    " to:",
       --    util.JSON.stringify(children)
       LET _v[vmidx].procIdParent = pp
+    ELSE
+      LET _v[vmidx].procIdParentWaiting = pp
     END IF
   END IF
   CALL decideStartOrNewTask(vmidx)
@@ -2330,6 +2340,45 @@ FUNCTION parentActive(procId STRING)
 
 END FUNCTION
 }
+
+FUNCTION findAppWithSameFEID(feid STRING)
+  DEFINE keys TStringArr
+  DEFINE i, vmidx INT
+  MYASSERT(feid IS NOT NULL)
+  LET keys = _selDict.getKeys()
+  FOR i = 1 TO keys.getLength()
+    LET vmidx = _selDict[keys[i]]
+    IF feid.equals(_v[vmidx].frontEndID) THEN
+      RETURN TRUE
+    END IF
+  END FOR
+  RETURN FALSE
+END FUNCTION
+
+FUNCTION checkWaitingForParent(procId STRING, sessId STRING, useSSE BOOLEAN)
+  DEFINE keys TStringArr
+  DEFINE vmidx INT
+  MYASSERT(procId IS NOT NULL)
+  MYASSERT(sessId IS NOT NULL)
+  LET keys = _selDict.getKeys()
+  FOR vmidx = 1 TO _v.getLength()
+    IF NOT S_ACTIVE.equals(_v[vmidx].state) THEN
+      CONTINUE FOR
+    END IF
+    IF procId.equals(_v[vmidx].procIdParentWaiting) THEN
+      CALL log(
+          SFMT("checkWaitingForParent: found waiting app:%1,procId:%2 for parent:%3",
+              _v[vmidx].programName, _v[vmidx].procId, procId))
+      LET _numWaitingParent = _numWaitingParent - 1
+      LET _v[vmidx].procIdParent = procId
+      LET _v[vmidx].procIdParentWaiting = NULL
+      LET _v[vmidx].sessId = sessId
+      LET _v[vmidx].useSSE = useSSE
+      MYASSERT(_numWaitingParent >= 0)
+      CALL handleVM(vmidx, FALSE, 0)
+    END IF
+  END FOR
+END FUNCTION
 
 FUNCTION decideStartOrNewTask(vmidx INT)
   DEFINE pp, procId STRING
@@ -2360,12 +2409,27 @@ FUNCTION decideStartOrNewTask(vmidx INT)
       WHEN _v[vmidx].useSSE AND _selDict.contains(pp)
         LET _selDict[procId] = vmidx --store the selector index of the procId
         CALL handleVM(vmidx, FALSE, 0)
+        IF _opt_program IS NOT NULL
+            AND _numWaitingParent > 0
+            AND _v[vmidx].sessId IS NOT NULL THEN
+          CALL checkWaitingForParent(procId, _v[vmidx].sessId, _v[vmidx].useSSE)
+        END IF
       WHEN NOT _v[vmidx].useSSE
           AND NOT checkNewTask(vmidx)
           AND NOT _selDict.contains(pp)
         CALL handleStart(vmidx)
     END CASE
   ELSE
+    IF _opt_program IS NOT NULL
+        AND _v[vmidx].frontEndID IS NOT NULL
+        AND _v[vmidx].procIdParentWaiting IS NOT NULL
+        AND findAppWithSameFEID(_v[vmidx].frontEndID) THEN
+      LET _numWaitingParent = _numWaitingParent + 1
+      CALL log(
+          SFMT("decideStartOrNewTask incr _numWaitingParent:%1",
+              _numWaitingParent))
+      RETURN
+    END IF
     CALL handleStart(vmidx)
   END IF
   IF _opt_program IS NULL THEN
