@@ -1166,6 +1166,9 @@ FUNCTION handleUAProto(x INT, path STRING)
       CALL _RWWchildren[sessId].clear()
     ELSE
       LET sessId = _v[vmidx].sessId
+      IF sessId IS NOT NULL THEN
+        LET _s[x].sessId = sessId
+      END IF
     END IF
     IF _v[vmidx].useSSE AND _s[x].method == "POST" THEN
       --only if SSE is active we answer with an empty result
@@ -2237,10 +2240,9 @@ FUNCTION extractProcId(p STRING)
 END FUNCTION
 
 FUNCTION handleVMMetaSel(c INT, line STRING)
-  DEFINE pp, procIdWaiting, sessId, encaps, compression, rtver STRING
+  DEFINE pp, procIdWaiting, encaps, compression, rtver STRING
   DEFINE ftV, ftFC, feid, env_feid, name STRING
-  DEFINE vmidx, ppidx, waitIdx INT
-  DEFINE children TStringArr
+  DEFINE vmidx INT
   --allocate a new VM index
   LET vmidx = findFreeVMIdx()
   --DISPLAY "new vmidx:", vmidx
@@ -2295,41 +2297,48 @@ FUNCTION handleVMMetaSel(c INT, line STRING)
   LET pp = extractMetaVar(line, "procIdParent", FALSE)
   IF pp IS NOT NULL THEN
     LET pp = extractProcId(pp)
-    --DISPLAY "procIdParent of:", _v[vmidx].procId, " is:", pp
-    IF _selDict.contains(pp) THEN
-      LET ppidx = _selDict[pp]
-      IF (sessId := _v[ppidx].sessId) IS NOT NULL THEN
-        --DISPLAY SFMT("set _v[%1].sessId=%2", vmidx, sessId)
-        LET _v[vmidx].sessId = sessId
-        LET _v[vmidx].useSSE = _v[ppidx].useSSE
-        IF _RWWchildren.contains(sessId) THEN
-          LET children =
-              _RWWchildren[sessId] --could be RUN WITHOUT WAITING child
-        END IF
-      END IF
-      IF procIdWaiting IS NOT NULL
-          AND NOT _v[vmidx].useSSE
-          AND _selDict.contains(procIdWaiting) THEN
-        LET waitIdx = _selDict[procIdWaiting];
-        LET _v[waitIdx].RUNchildIdx = vmidx;
-      END IF
-      IF procIdWaiting == pp THEN
-        LET children = _v[ppidx].RUNchildren --procIdWaiting forces a RUN child
-      END IF
-      IF NOT _v[vmidx].useSSE THEN
-        LET children[children.getLength() + 1] = _v[vmidx].procId
-      END IF
-      --DISPLAY "!!!!set children of:",
-      --    printSel(ppidx),
-      --    " to:",
-      --    util.JSON.stringify(children)
-      LET _v[vmidx].procIdParent = pp
-    ELSE
-      LET _v[vmidx].procIdParentWaiting = pp
-    END IF
+    CALL checkChildren(vmidx, pp)
   END IF
   CALL decideStartOrNewTask(vmidx)
   RETURN vmidx
+END FUNCTION
+
+FUNCTION checkChildren(vmidx INT, procIdParent STRING)
+  DEFINE children TStringArr
+  DEFINE ppidx, waitIdx INT
+  DEFINE sessId, procIdWaiting STRING
+  IF NOT _selDict.contains(procIdParent) THEN
+    DISPLAY "checkChildren vmidx:", vmidx, ",no procIdParent:", procIdParent
+    LET _v[vmidx].procIdParentWaiting = procIdParent
+    RETURN
+  END IF
+  LET ppidx = _selDict[procIdParent]
+  LET procIdWaiting = _v[vmidx].procIdWaiting
+  LET _v[vmidx].procIdParent = procIdParent
+  IF (sessId := _v[ppidx].sessId) IS NOT NULL THEN
+    --DISPLAY SFMT("checkChildren set _v[%1].sessId=%2", vmidx, sessId)
+    LET _v[vmidx].sessId = sessId
+    LET _v[vmidx].useSSE = _v[ppidx].useSSE
+    IF NOT _v[vmidx].useSSE AND _RWWchildren.contains(sessId) THEN
+      LET children = _RWWchildren[sessId] --could be RUN WITHOUT WAITING child
+    END IF
+  END IF
+  IF procIdWaiting IS NOT NULL
+      AND NOT _v[vmidx].useSSE
+      AND _selDict.contains(procIdWaiting) THEN
+    LET waitIdx = _selDict[procIdWaiting];
+    LET _v[waitIdx].RUNchildIdx = vmidx;
+  END IF
+  IF procIdWaiting == procIdParent THEN
+    LET children = _v[ppidx].RUNchildren --procIdWaiting forces a RUN child
+  END IF
+  IF NOT _v[vmidx].useSSE THEN
+    LET children[children.getLength() + 1] = _v[vmidx].procId
+  END IF
+  --DISPLAY "!!!!set children of:",
+  --    printSel(ppidx),
+  --    " to:",
+  --    util.JSON.stringify(children)
 END FUNCTION
 
 {
@@ -2358,6 +2367,9 @@ END FUNCTION
 FUNCTION checkWaitingForParent(procId STRING, sessId STRING, useSSE BOOLEAN)
   DEFINE keys TStringArr
   DEFINE vmidx INT
+  CALL log(
+      SFMT("checkWaitingForParent:procId:%1,sessId:%2,useSSE:%3",
+          procId, sessId, useSSE))
   MYASSERT(procId IS NOT NULL)
   MYASSERT(sessId IS NOT NULL)
   LET keys = _selDict.getKeys()
@@ -2370,10 +2382,8 @@ FUNCTION checkWaitingForParent(procId STRING, sessId STRING, useSSE BOOLEAN)
           SFMT("checkWaitingForParent: found waiting app:%1,procId:%2 for parent:%3",
               _v[vmidx].programName, _v[vmidx].procId, procId))
       LET _numWaitingParent = _numWaitingParent - 1
-      LET _v[vmidx].procIdParent = procId
       LET _v[vmidx].procIdParentWaiting = NULL
-      LET _v[vmidx].sessId = sessId
-      LET _v[vmidx].useSSE = useSSE
+      CALL checkChildren(vmidx, procId)
       MYASSERT(_numWaitingParent >= 0)
       CALL handleVM(vmidx, FALSE, 0)
     END IF
@@ -2409,16 +2419,19 @@ FUNCTION decideStartOrNewTask(vmidx INT)
       WHEN _v[vmidx].useSSE AND _selDict.contains(pp)
         LET _selDict[procId] = vmidx --store the selector index of the procId
         CALL handleVM(vmidx, FALSE, 0)
-        IF _opt_program IS NOT NULL
-            AND _numWaitingParent > 0
-            AND _v[vmidx].sessId IS NOT NULL THEN
-          CALL checkWaitingForParent(procId, _v[vmidx].sessId, _v[vmidx].useSSE)
-        END IF
       WHEN NOT _v[vmidx].useSSE
           AND NOT checkNewTask(vmidx)
           AND NOT _selDict.contains(pp)
         CALL handleStart(vmidx)
     END CASE
+    IF _opt_program IS NOT NULL AND _numWaitingParent > 0 THEN
+      IF _v[vmidx].sessId IS NOT NULL THEN
+        IF NOT _v[vmidx].useSSE AND _selDict.contains(pp) THEN
+          LET _selDict[procId] = vmidx --store the selector index of the procId
+        END IF
+        CALL checkWaitingForParent(procId, _v[vmidx].sessId, _v[vmidx].useSSE)
+      END IF
+    END IF
   ELSE
     IF _opt_program IS NOT NULL
         AND _v[vmidx].frontEndID IS NOT NULL
@@ -2426,8 +2439,8 @@ FUNCTION decideStartOrNewTask(vmidx INT)
         AND findAppWithSameFEID(_v[vmidx].frontEndID) THEN
       LET _numWaitingParent = _numWaitingParent + 1
       CALL log(
-          SFMT("decideStartOrNewTask incr _numWaitingParent:%1",
-              _numWaitingParent))
+          SFMT("decideStartOrNewTask incr _numWaitingParent:%1, procIdParentWaiting:%2",
+              _numWaitingParent, _v[vmidx].procIdParentWaiting))
       RETURN
     END IF
     CALL handleStart(vmidx)
@@ -2570,7 +2583,11 @@ FUNCTION handleStart(vmidx INT)
     CALL checkRequestFT(-1, vmidx, "gbc://VERSION")
   ELSE
     --just look in FGLGBCDIR
-    CALL handleGBCVersion(vmidx, gbcResourceName("VERSION"))
+    IF _opt_gdc THEN
+      CALL handleStart2(vmidx)
+    ELSE
+      CALL handleGBCVersion(vmidx, gbcResourceName("VERSION"))
+    END IF
   END IF
 END FUNCTION
 
