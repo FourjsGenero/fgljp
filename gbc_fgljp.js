@@ -338,6 +338,7 @@ console.log("gbc_fgljp begin");
     }
     window.gbcWrapper.interrupt = function(data) {
       urlog("gbcWrapper.interrupt:"+tryJSONs(data));
+      sendPOST("interrupt");
     }
     window.gbcWrapper.ping = function() {
       urlog("ping");
