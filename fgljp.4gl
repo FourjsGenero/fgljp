@@ -2250,7 +2250,7 @@ FUNCTION handleVMMetaSel(c INT, line STRING)
   LET _v[vmidx].isMeta = TRUE
   CALL log(SFMT("handleVMMetaSel:%1", line))
   LET encaps = extractMetaVar(line, "encapsulation", TRUE)
-  LET compression = extractMetaVar(line, "compression", TRUE)
+  LET compression = extractMetaVar(line, "compression", FALSE)
   --DISPLAY "encaps:", encaps, ",compression:", compression
   IF compression IS NOT NULL THEN
     MYASSERT(compression.equals("none")) --avoid that someone enables zlib
