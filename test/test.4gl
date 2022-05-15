@@ -2,7 +2,7 @@
 IMPORT util
 IMPORT os
 IMPORT FGL testutils
-IMPORT FGL fgldialog
+--IMPORT FGL fgldialog
 
 &define MYASSERT(x) IF NOT NVL(x,0) THEN CALL testutils.myErr("ASSERTION failed in line:"||__LINE__||":"||#x) END IF
 &define MYASSERT_MSG(x,msg) IF NOT NVL(x,0) THEN CALL testutils.myErr("ASSERTION failed in line:"||__LINE__||":"||#x||","||msg) END IF
@@ -10,17 +10,23 @@ IMPORT FGL fgldialog
 DEFINE _arg STRING
 MAIN
   DEFINE code INT
-  DEFINE destlogo STRING
+  DEFINE destlogo, ret STRING
   LET _arg = arg_val(1)
   IF _arg IS NOT NULL THEN
     DISPLAY "arg1:", _arg
     MESSAGE "arg1:", _arg
   END IF
+  {IF _arg IS NULL THEN
+    CALL fgl_winMessage(title: "info","Open debug console","info")
+  END IF}
+
   CALL ui.Interface.frontCall("qa", "startQA", [], [])
   {MENU --uncomment for debug
     COMMAND "EXIT"
       EXIT MENU
   END MENU}
+  DEFER INTERRUPT
+  CALL testInterrupt()
   LET destlogo=IIF(testutils.isWin(),"logo,.png","logo?.png")
   MYASSERT(os.Path.copy("logo.png",destlogo)==TRUE)
   CALL menuShowForm(1,destlogo)
@@ -44,8 +50,24 @@ MAIN
   END MENU
   CALL menuShowForm(2,"num001.png")
   --CALL fgl_winMessage(title: "info",sfmt("test went thru for arg:%1",_arg),"info")
+  CALL ui.Interface.frontCall("standard", "feinfo", ["fename"], [ret])
+  DISPLAY "last feinfo:", ret
   DISPLAY IIF(_arg == "child", "RETURN from child", "TEST OK")
 END MAIN
+
+FUNCTION testInterrupt()
+  OPEN FORM f FROM "interrupt"
+  DISPLAY FORM f
+  MENU
+    COMMAND "qa_menu_ready"
+      LET int_flag=0
+      CALL ui.Interface.frontCall("fgljp","click_on_element_with_text",["Interrupt",100],[])
+      SLEEP 5
+      MYASSERT_MSG(int_flag,"int_flag wasn't set")
+      EXIT MENU
+  END MENU
+  CLOSE FORM f
+END FUNCTION
 
 FUNCTION menuShowForm(num INT,img STRING)
   DEFINE f64, w64,title STRING

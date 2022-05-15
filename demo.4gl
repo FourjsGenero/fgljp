@@ -1,7 +1,9 @@
 IMPORT FGL fgldialog
 MAIN
-  DEFINE arg, win STRING
-  DEFINE num INT
+  DEFINE arg, win, uploaded STRING
+  DEFINE num, idleCount, uploadCount INT
+  DEFER INTERRUPT
+  OPTIONS ON CLOSE APPLICATION CALL myexit
   LET arg = arg_val(1)
   IF arg IS NOT NULL THEN
     DISPLAY "arg1:", arg, ",arg2:", arg_val(2)
@@ -10,8 +12,30 @@ MAIN
       CALL fc10()
     END IF
   END IF
+  DEFER INTERRUPT
   MENU arg
+    COMMAND "Test interrupt"
+      OPEN FORM f FROM "interrupt"
+      DISPLAY FORM f
+      MESSAGE "Click on 'SLEEP' and then on 'Interrupt'"
+      MENU
+        COMMAND "Very long Sleep (20s)"
+          LET int_flag = FALSE
+          DISPLAY "SLEEEEEEEEEEEP"
+          SLEEP 20
+          IF int_flag THEN
+            MESSAGE "Sleep was interrupted"
+          ELSE
+            MESSAGE "Sleep ready"
+          END IF
+        COMMAND "Back to Main Menu"
+          EXIT MENU
+      END MENU
+      CLOSE FORM f
+    COMMAND "QA click" "clicks on 'Message+Display' after 500ms"
+      CALL ui.Interface.frontCall("fgljp","click_on_element_with_text",["Message+DISPLAY",500],[])
     COMMAND "Long Sleep"
+      DISPLAY "SLEEEEEEEEEEEP"
       MESSAGE "Going to sleep for 5 seconds"
       CALL ui.Interface.refresh()
       SLEEP 5
@@ -24,6 +48,15 @@ MAIN
       LET num = num + 1
       MESSAGE SFMT("TEST%1", num)
       DISPLAY SFMT("TEST%1", num)
+    COMMAND "Test idle"
+      MESSAGE "All 5 seconds an idle message should appear"
+      MENU "Idle test"
+        ON IDLE 5
+          LET idleCount = idleCount + 1
+          MESSAGE SFMT("IDLE:%1", idleCount)
+        COMMAND "Back to Main Menu"
+          EXIT MENU
+      END MENU
     COMMAND "10 frontcalls"
       CALL fc10()
     COMMAND "debugger frontcall"
@@ -60,12 +93,14 @@ MAIN
       END TRY
     COMMAND "getfile"
       TRY
-        CALL fgl_getfile("logo2.png", "logo3.png")
+        LET uploadCount = uploadCount + 1
+        LET uploaded = SFMT("upload%1.png", uploadCount)
+        CALL fgl_getfile("logo2.png", uploaded)
       CATCH
         ERROR err_get(status)
         CONTINUE MENU
       END TRY
-      CALL showForm("logo3.png")
+      CALL showForm(uploaded)
       MESSAGE "getfile successful"
     COMMAND "env"
       RUN "env | grep FGL"
@@ -74,6 +109,13 @@ MAIN
       EXIT MENU
   END MENU
 END MAIN
+
+--called if the end user closes the browser or
+--navigates away from the application page
+FUNCTION myexit()
+  DISPLAY "!!!!!!!!!myexit ON CLOSE"
+  EXIT PROGRAM 1
+END FUNCTION
 
 FUNCTION sub()
   MENU

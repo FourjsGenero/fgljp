@@ -30,7 +30,7 @@ endif
 
 all: fgljp.42m mygetopt.42m runonserver.42m getgdcpath.42m fglssh.42m
 
-demo: fgljp.42m demo.42m demo.42f
+demo: fgljp.42m interrupt.42f demo.42m demo.42f
 #	./fgljp -v demo.42m a b
 	$(FGLJP) demo.42m a b
 
@@ -84,6 +84,7 @@ clean_prog:
 clean: clean_prog
 	rm -f *.42? *.4gl~
 	rm -rf priv cacheFT
+	rm -f upload*.png
 	$(MAKE) -C test clean
 
 distclean: clean
