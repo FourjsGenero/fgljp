@@ -2687,6 +2687,9 @@ FUNCTION handleStart2(vmidx INT)
       IF _gbcver >= 4.0 THEN
         LET startPath = startPath, "&UR_PROTOCOL_VERSION=2"
       END IF
+      IF _verbose THEN
+        LET startPath = startPath, "&verbose=1"
+      END IF
     END IF
     IF _firstPath IS NULL THEN
       LET _firstPath = "/", startPath

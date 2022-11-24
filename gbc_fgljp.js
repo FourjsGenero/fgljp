@@ -10,6 +10,7 @@ console.log("gbc_fgljp begin");
   var _cmdCount=0;
   var _source=null;
   var _useSSE=false; //use Server Side Events
+  var _verbose=false;
   var _proto=1; //UR protocol version, ist set to 2 for GBC>=4.00
   var _procId=null;
   var _isBrowser=true;
@@ -28,9 +29,20 @@ console.log("gbc_fgljp begin");
   var _gbcMinor_PL = ""; //Minor + patchLevel
   var _procIds = new Map;
   var _lastMeta = null;
-  if (_debug) {
+  function checkQueryParams() {
+    var usp=new URLSearchParams(window.location.search);
+    var useSSE=usp.get("useSSE");
+    var verbose=usp.get("verbose");
+    _useSSE= (useSSE=="1") ?true:false;
+    _verbose= (verbose=="1") ?true:false;
+    _proto=window.gbcWrapper.protocolVersion;
+    _isBrowser=window.gbcWrapper.isBrowser();
+    mylog("_useSSE:"+_useSSE+",_proto:"+_proto+",_isBrowser:"+_isBrowser);
+  }
+  checkQueryParams();
+  if (_debug || _verbose) {
     urlog=function(s) {
-      //console.log("[UR] "+s);
+      console.log("[UR] "+s);
       //alert(s.replace(/"/g, "'"));
     }
     mylog=function(s) {
@@ -43,15 +55,6 @@ console.log("gbc_fgljp begin");
       return data;
     }
   }
-  function checkQueryParams() {
-    var usp=new URLSearchParams(window.location.search);
-    var useSSE=usp.get("useSSE");
-    _useSSE= (useSSE=="1") ?true:false;
-    _proto=window.gbcWrapper.protocolVersion;
-    _isBrowser=window.gbcWrapper.isBrowser();
-    mylog("_useSSE:"+_useSSE+",_proto:"+_proto+",_isBrowser:"+_isBrowser);
-  }
-  checkQueryParams();
   function myalert(txt) {
     console.log("alert:"+txt);
     //alert(txt);
@@ -413,7 +416,7 @@ console.log("gbc_fgljp begin");
              meta:meta,
              forcedURfrontcalls:{},
              debugMode:1,
-             logLevel:2};
+             logLevel:_verbose?4:2};
     _lastMeta = meta;
     emitReady(obj);
     addGBCPatches(window.gbc);
@@ -479,6 +482,7 @@ console.log("gbc_fgljp begin");
       var url = window.gbc.UrlService.currentUrl();
       url.removeQueryString("app");
       url.removeQueryString("useSSE");
+      url.removeQueryString("verbose");
       url.removeQueryString("UR_PLATFORM_TYPE");
       url.removeQueryString("UR_PLATFORM_NAME");
       url.removeQueryString("UR_PROTOCOL_TYPE");
