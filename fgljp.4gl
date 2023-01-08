@@ -1,4 +1,4 @@
-#+ fgljp fgl GAS/remote proxy using java interfaces
+#+ fgljp fgl GAS/remote proxy using the new Genero binary channel API
 OPTIONS
 SHORT CIRCUIT
 &define MYASSERT(x) IF NOT NVL(x,0) THEN CALL myErr("ASSERTION failed in line:"||__LINE__||":"||#x) END IF
