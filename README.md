@@ -104,6 +104,11 @@ It starts first fgljp in the background and exports FGLSERVER to the right value
 Using OpenSSH:
 
 If you have an OpenSSH client on your desktop machine installed (On Mac/Linux: preinstalled, Windows 10 or bigger: needs to be installed) and a bash on the remote side then invocation is pretty simple.
+(Windows powershell with admin rights:
+Add-WindowsCapability -Online -Name OpenSSH.Client
+installs or query:
+Get-WindowsCapability -Online | ? Name -like 'OpenSSH.Client*'
+)
 
 ```
 $ fglssh -b <your-genero-dev-machine>
@@ -142,4 +147,4 @@ In all other cases you need to use one of the known 'direct shortcut tags' descr
 
 # Known problems
 Currently its impossible to terminate fgljp with Control-c in the windows console (see FGL issue FGL-5697).
-One needs to use `taskkill /f /im fglrun.exe` currently to terminat the process.
+One needs to use `taskkill /f /im fglrun.exe` currently to terminate the process.
