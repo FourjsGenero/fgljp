@@ -1,0 +1,116 @@
+#!/bin/bash
+TUNNEL_SCRIPT=`mktemp`
+rm -f $TUNNEL_SCRIPT
+#the following script is written to a temp location
+#and then runs in the bg
+cat <<'EOF'  >$TUNNEL_SCRIPT
+#!/bin/bash
+#builds a connection to the remote host
+#calls fgljp -n -p 0 and uses the output to build
+#a tunnel with that port
+#and builds a ssh shell script which uses FGLSERVER with the tunnel
+#calling fglrun on the remote host connects then to fgljp
+#fgljp prints the URL->this script opens the browser
+
+#check if we can use the gathered port on our side
+forward_port(){
+  local res=`mktemp`
+  local i=0
+  MYPORT=$PORT
+  echo "MYPORT=$MYPORT"
+  while :; do
+    #echo "i:$i try ssh -L $MYPORT:127.0.0.1:$PORT $RHOST ..."
+    #do a dry run with a dummy command...
+    ssh -L $MYPORT:127.0.0.1:$PORT $RHOST "echo hallo">/dev/null 2>$res
+    local err=`cat $res`
+    #echo "  err:$err"
+    #..and check if there was no error
+    if [ -z "$err" ]
+    then
+      echo "port fwd ok $MYPORT $PORT"
+      echo "port fwd ok $MYPORT $PORT" >> /tmp/out
+      ssh -N -L $MYPORT:127.0.0.1:$PORT $RHOST &
+      TUNNEL_PID=$!
+      echo "TUNNEL_PID:$TUNNEL_PID"
+      break
+    elif [ $i -gt 20 ]
+    then
+      echo "stop finding a free tunnel after 20 iterations"
+      rm -f $res
+      exit 1
+      break
+    else
+      #simply try to increase the port on our side
+      echo "error:$err"
+      MYPORT=`expr $MYPORT + 1`
+      if [ $MYPORT -gt 65534 ] #biggest TCP port reached
+      then
+        MYPORT=7001
+      fi
+      echo "MYPORT:$MYPORT"
+      i=`expr $i + 1`
+    fi
+  done
+  rm -f $res
+}
+
+RHOST=$1
+TEMP_SH=$2
+#echo "$RHOST:$RHOST, TEMP_SH:$TEMP_SH"
+ssh $RHOST 'fgljp -n -p 0' | while read line
+do
+  #printf '%s\n' "$line"
+  if [[ ${line:0:8} = '{"port":' ]]
+  then
+    #gather the port from fgljp
+    PORT=`echo $line | sed -e 's/^{"port":\([0-9][0-9]*\).*$/\1/'`
+    echo "PORT=$PORT"
+    #..and the pid
+    FGLJP_PID=`echo $line | sed -e 's/^{.*"pid":\([0-9][0-9]*\).*$/\1/'`
+    echo "FGLJP_PID=$FGLJP_PID"
+    #build the tunnel with the auto port
+    forward_port
+    NUM=`expr $PORT - 6400`
+    export FGLSERVER=127.0.0.1:$NUM
+    #echo "PORT:$PORT, MYPORT:$MYPORT"
+    echo "export FGLSERVER=127.0.0.1:$NUM" > $TEMP_SH
+    #this is our ssh process to work with
+    echo "ssh -o SendEnv=FGLSERVER $RHOST" >> $TEMP_SH
+    #cleanup fgljp (windows only)
+    echo "ssh $RHOST 'kill $FGLJP_PID' > /dev/null" >> $TEMP_SH
+    #kill the tunnel (could be done also with a master control socket)
+    echo "kill $TUNNEL_PID" >> $TEMP_SH
+    #cat $TEMP_SH
+    chmod u+x $TEMP_SH
+  elif [[ ${line:0:7} = "http://" ]]
+  then
+    #we got a program , open that URL locally, but fill in our sides port if it eventually did change
+    #echo "open URL:$line"
+    URL=`echo $line | sed -e "s/^http:\/\/127.0.0.1:$PORT\(.*\)\$/http:\/\/127.0.0.1:$MYPORT\1/"`
+    #echo "URL:$URL"
+    open $URL 
+  fi
+done
+
+EOF
+chmod u+x $TUNNEL_SCRIPT
+
+RHOST=$1
+if [[ -z $1 ]]
+then
+  echo "usage: $0 <remote host>"
+else
+  TMP_SCRIPT=`mktemp`
+  rm -f $TMP_SCRIPT
+  $TUNNEL_SCRIPT $RHOST $TMP_SCRIPT &
+  BG_PID=$!
+  until [ -f $TMP_SCRIPT ]
+  do
+     sleep 1
+  done
+  #echo "ready"
+  . $TMP_SCRIPT
+  rm -f $TMP_SCRIPT
+  kill $BG_PID
+  rm -f $TUNNEL_SCRIPT
+fi
