@@ -444,7 +444,7 @@ FUNCTION start_ssh(localPort INT)
     CALL menu_tunnelonly(rFGLSERVER)
   ELSE
     IF _opt_ssh_bash THEN
-      --make usage of the master control socket of possible (avoids re auth)
+      --make usage of the master control socket if possible (avoids re auth)
       LET cmd = IIF(fgljp.isWin(), "ssh -t", SFMT("ssh -t -S %1", tmps))
       LET cmd =
           IIF(_opt_ssh_port IS NULL, cmd, SFMT("%1 -p %2", cmd, _opt_ssh_port))
