@@ -257,7 +257,7 @@ MAIN
     CALL setup_program(priv, pub, port)
   END IF
   LET _channels[1] = _server
-  WHILE (idx := base.Channel.select(_channels)) <> 0
+  WHILE (idx := util.Channels.select(_channels)) <> 0
     --DISPLAY "idx:",idx
     IF idx == 1 THEN
       CALL acceptNew()
@@ -621,7 +621,7 @@ FUNCTION acceptNew()
   DEFINE chan base.Channel
   DEFINE c INT
   LET _didAcceptOnce = TRUE
-  LET chan = _server.accept()
+  LET chan = util.Channels.accept(_server)
   IF chan IS NULL THEN
     --CALL log("acceptNew: chan is NULL") --normal in non blocking
     RETURN
@@ -1787,7 +1787,7 @@ FUNCTION writeHTTPFile(x INT, fn STRING, ctlen INT)
   CALL c.openFile(fn, "r")
   LET numBytes = os.Path.size(fn)
   MYASSERT(os.Path.size(fn) == ctlen)
-  VAR written = c.copyN(chan, ctlen)
+  VAR written = util.Channels.copyN(c, chan, ctlen)
   MYASSERT(written == ctlen)
   CALL c.close()
 END FUNCTION
@@ -1996,7 +1996,7 @@ FUNCTION writeResponseInt2(
     CALL writeHTTPLine(x, SFMT("Content-Type: %1", ct))
   END IF
   CALL writeHTTPLine(x, "")
-  CALL _s[x].chan.writeBinaryString(content)
+  CALL util.Channels.writeBinaryString(_s[x].chan, content)
 END FUNCTION
 
 FUNCTION writeResponseFileHdrs(x INT, fn STRING, ct STRING, headers TStringArr)
@@ -2429,12 +2429,12 @@ FUNCTION readEncaps(vmidx INT)
   DEFINE line STRING
   DEFINE chan base.Channel
   LET chan = _v[vmidx].chan
-  LET bodySize = chan.readNetInt32()
+  LET bodySize = util.Channels.readNetInt32(chan)
   IF chan.isEof() THEN
     RETURN TAuiData, ""
   END IF
-  LET dataSize = chan.readNetInt32()
-  LET type = chan.readNetInt8()
+  LET dataSize = util.Channels.readNetInt32(chan)
+  LET type = util.Channels.readNetInt8(chan)
   --DISPLAY "readEncaps: bodySize:",bodySize,",type:",type
   MYASSERT(bodySize == dataSize)
   CASE
@@ -2576,7 +2576,7 @@ FUNCTION createFO(path STRING) RETURNS(base.Channel, STRING)
 END FUNCTION
 
 FUNCTION copyBytes(src base.Channel, dest base.Channel, numBytes INT)
-  VAR bytesWritten = src.copyN(dest, numBytes)
+  VAR bytesWritten = util.Channels.copyN(src, dest, numBytes)
   MYASSERT(bytesWritten == numBytes)
 END FUNCTION
 
@@ -2706,11 +2706,11 @@ END FUNCTION
 FUNCTION getNameC(chan base.Channel)
   DEFINE name STRING
   DEFINE namesize, xlen INT
-  LET namesize = chan.readNetInt32()
+  LET namesize = util.Channels.readNetInt32(chan)
   --namesize includes the terminating 0
   --LET name=chan.readBinaryString(namesize-1)
   LET name = chan.readOctets(namesize - 1)
-  LET xlen = chan.readNetInt8() --read over terminating 0
+  LET xlen = util.Channels.readNetInt8(chan) --read over terminating 0
   CALL log(
       SFMT("getNameC name:%1 len:%2 ,namesize:%3, bytes:%4",
           name, name.getLength(), namesize, namesize + 4))
@@ -2878,7 +2878,8 @@ FUNCTION getLastModified(fn STRING) RETURNS INT
 END FUNCTION
 
 FUNCTION setLastModified(fn STRING, t INT)
-  CALL os.Path.setModificationTime(fn, util.Datetime.fromSecondsSinceEpoch(t))
+  VAR dt = util.Datetime.fromSecondsSinceEpoch(t)
+  MYASSERT(os.Path.setModificationTime(fn, dt) == TRUE)
 END FUNCTION
 
 FUNCTION lookupInCache(name STRING) RETURNS(BOOLEAN, INT, INT)
@@ -3489,7 +3490,7 @@ FUNCTION handleFTPutFile(vmidx INT, num INT, remaining INT)
   DEFINE name STRING
   DEFINE chan base.Channel
   LET chan = _v[vmidx].chan
-  LET fileSize = chan.readNetInt32()
+  LET fileSize = util.Channels.readNetInt32(chan)
   CALL getNameC(chan) RETURNING name, numBytes
   LET remaining = remaining - 4 - numBytes
 
@@ -3612,7 +3613,7 @@ FUNCTION handleFTStatus(vmidx INT, num INT, remaining INT)
   DEFINE ftg FTGetImage
   DEFINE chan base.Channel
   LET chan = _v[vmidx].chan
-  LET fstatus = chan.readNetInt32()
+  LET fstatus = util.Channels.readNetInt32(chan)
   LET remaining = remaining - 4
   CALL log(SFMT("handleFTStatus for num:%1,status:%2", num, fstatus))
   CASE fstatus
@@ -3686,8 +3687,8 @@ FUNCTION handleFT(vmidx INT, dataSize INT)
   DEFINE num, remaining INT
   DEFINE chan base.Channel
   LET chan = _v[vmidx].chan
-  LET ftType = chan.readNetInt8()
-  LET num = chan.readNetInt32()
+  LET ftType = util.Channels.readNetInt8(chan)
+  LET num = util.Channels.readNetInt32(chan)
   LET remaining = dataSize - 5
   CALL log(
       SFMT("handleFT ftType:%1,num:%2, remaining:%3",
@@ -4044,14 +4045,14 @@ FUNCTION sendGetImageOrAck(
   LET chan = _v[vmidx].chan
   MYASSERT(chan IS NOT NULL AND _channels.search(NULL, chan) > 0)
   CALL writeEncapsHeader(chan, TFileTransfer, pktlen)
-  CALL chan.writeNetInt8(b0)
-  CALL chan.writeNetInt32(num)
-  CALL chan.writeNetInt32(len)
-  CALL chan.writeBinaryString(fileName)
+  CALL util.Channels.writeNetInt8(chan, b0)
+  CALL util.Channels.writeNetInt32(chan, num)
+  CALL util.Channels.writeNetInt32(chan, len)
+  CALL util.Channels.writeBinaryString(chan, fileName)
   IF getImage THEN
-    CALL chan.writeNetInt32(extlen)
-    CALL chan.writeBinaryString(ext)
-    CALL chan.writeNetInt8(0) --terminating 0
+    CALL util.Channels.writeNetInt32(chan, extlen)
+    CALL util.Channels.writeBinaryString(chan, ext)
+    CALL util.Channels.writeNetInt8(chan, 0) --terminating 0
   END IF
   CALL chan.flush()
 END FUNCTION
@@ -4064,8 +4065,8 @@ FUNCTION sendBody(vmidx INT, num INT, ichan base.Channel, numBytes INT)
   LET chan = _v[vmidx].chan
   CALL writeEncapsHeader(chan, TFileTransfer, pktlen)
   LET b0 = FTBody
-  CALL chan.writeNetInt8(b0)
-  CALL chan.writeNetInt32(num)
+  CALL util.Channels.writeNetInt8(chan, b0)
+  CALL util.Channels.writeNetInt32(chan, num)
   CALL copyBytes(ichan, chan, numBytes)
 END FUNCTION
 
@@ -4077,8 +4078,8 @@ FUNCTION sendEof(vmidx INT, num INT)
   LET b0 = FTEof
   LET chan = _v[vmidx].chan
   CALL writeEncapsHeader(chan, TFileTransfer, pktlen)
-  CALL chan.writeNetInt8(b0)
-  CALL chan.writeNetInt32(num)
+  CALL util.Channels.writeNetInt8(chan, b0)
+  CALL util.Channels.writeNetInt32(chan, num)
   CALL chan.flush()
 END FUNCTION
 
@@ -4090,23 +4091,23 @@ FUNCTION sendFTStatus(vmidx INT, num INT, code INT)
   LET b0 = FTStatus
   LET chan = _v[vmidx].chan
   CALL writeEncapsHeader(chan, TFileTransfer, pktlen)
-  CALL chan.writeNetInt8(b0)
-  CALL chan.writeNetInt32(num)
-  CALL chan.writeNetInt32(code)
+  CALL util.Channels.writeNetInt8(chan, b0)
+  CALL util.Channels.writeNetInt32(chan, num)
+  CALL util.Channels.writeNetInt32(chan, code)
   CALL chan.flush()
 END FUNCTION
 
 FUNCTION writeEncapsHeader(chan base.Channel, type TINYINT, len INT)
-  CALL chan.writeNetInt32(len)
-  CALL chan.writeNetInt32(len)
-  CALL chan.writeNetInt8(type)
+  CALL util.Channels.writeNetInt32(chan, len)
+  CALL util.Channels.writeNetInt32(chan, len)
+  CALL util.Channels.writeNetInt8(chan, type)
 END FUNCTION
 
 FUNCTION writeToVMEncaps(vmidx INT, cmd STRING)
   DEFINE chan base.Channel
   LET chan = _v[vmidx].chan
   CALL writeEncapsHeader(chan, TAuiData, cmd.getLength())
-  CALL chan.writeBinaryString(cmd)
+  CALL util.Channels.writeBinaryString(chan, cmd)
   CALL chan.flush()
 END FUNCTION
 
