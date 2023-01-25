@@ -1,5 +1,4 @@
 IMPORT os
-IMPORT util
 IMPORT FGL testutils
 
 MAIN

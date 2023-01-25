@@ -5,12 +5,12 @@ window.fgljp = new Object;
 window.fgljp.navman=null;
 console.log("gbc_fgljp begin");
 (function() {
-  var _xmlAsyncFlag=true;
   var _sessId=null;
   var _numRequest=1;
   var _cmdCount=0;
   var _source=null;
   var _useSSE=false; //use Server Side Events
+  var _verbose=false;
   var _proto=1; //UR protocol version, ist set to 2 for GBC>=4.00
   var _procId=null;
   var _isBrowser=true;
@@ -29,9 +29,20 @@ console.log("gbc_fgljp begin");
   var _gbcMinor_PL = ""; //Minor + patchLevel
   var _procIds = new Map;
   var _lastMeta = null;
-  if (_debug) {
+  function checkQueryParams() {
+    var usp=new URLSearchParams(window.location.search);
+    var useSSE=usp.get("useSSE");
+    var verbose=usp.get("verbose");
+    _useSSE= (useSSE=="1") ?true:false;
+    _verbose= (verbose=="1") ?true:false;
+    _proto=window.gbcWrapper.protocolVersion;
+    _isBrowser=window.gbcWrapper.isBrowser();
+    mylog("_useSSE:"+_useSSE+",_proto:"+_proto+",_isBrowser:"+_isBrowser);
+  }
+  checkQueryParams();
+  if (_debug || _verbose) {
     urlog=function(s) {
-      //console.log("[UR] "+s);
+      console.log("[UR] "+s);
       //alert(s.replace(/"/g, "'"));
     }
     mylog=function(s) {
@@ -44,15 +55,6 @@ console.log("gbc_fgljp begin");
       return data;
     }
   }
-  function checkQueryParams() {
-    var usp=new URLSearchParams(window.location.search);
-    var useSSE=usp.get("useSSE");
-    _useSSE= (useSSE=="1") ?true:false;
-    _proto=window.gbcWrapper.protocolVersion;
-    _isBrowser=window.gbcWrapper.isBrowser();
-    mylog("_useSSE:"+_useSSE+",_proto:"+_proto+",_isBrowser:"+_isBrowser);
-  }
-  checkQueryParams();
   function myalert(txt) {
     console.log("alert:"+txt);
     //alert(txt);
@@ -70,6 +72,12 @@ console.log("gbc_fgljp begin");
   function getCurrentApp() {
     const sess=getCurrentSession();
     return sess.getCurrentApplication();
+  }
+  //override gbc's onbeforeunload
+  window.onbeforeunload = function() {
+    if (_procIds.size > 0 || getCurrentApp()) {
+      return "Really leave page ?"; //note: the text isn't displayed anymore in newer browsers
+    }
   }
   function getNode(id, app) {
     const theApp=Boolean(app)?app:getCurrentApp();
@@ -90,6 +98,69 @@ console.log("gbc_fgljp begin");
   function getAppName(app) {
     const node0=getNode(0,app);
     return node0.attribute("name");
+  }
+  function elForTextInt(el,text) {
+    if (!el) { return null; }
+    if (el.nodeType==3 && text == el.textContent) {
+      return el;
+    }
+    const childNodes = el.childNodes;
+    for (let i=0;i<childNodes.length;i++) {
+      var cEl=elForTextInt(childNodes[i],text);
+      if (cEl!==null) {
+        return cEl;
+      }
+    }
+    return null;
+  }
+  function elForText(text) {
+    const el=elForTextInt(document.body,text);
+    if (el!==null) {
+      return el.parentElement; //the node containing the text
+    }
+    return null;
+  }
+  fgljp.elForText=elForText;
+  function ancientScrollX() {
+    var t;
+    return (((t = document.documentElement) || (t = document.body.parentNode)) && typeof t.ScrollLeft == 'number' ? t : document.body).ScrollLeft;
+  }
+  function ancientScrollY() {
+    var t;
+    return (((t = document.documentElement) || (t = document.body.parentNode)) && typeof t.ScrollTop == 'number' ? t : document.body).ScrollTop;
+  }
+  function getScrollX() {
+    return window.scrollX !== undefined ? window.scrollX :
+          ( window.pageXOffset !== undefined ? window.pageXOffset : ancientScrollX());
+  }
+  function getScrollY() {
+    return window.scrollY !== undefined ? window.scrollY :
+          ( window.pageYOffset !== undefined ? window.pageYOffset : ancientScrollY());
+  }
+  function eventInit() {
+    return { bubbles: true,
+           view: window,
+           cancelable: true };
+  }
+  function sendQAMouseEvent(el) {
+    var r = el.getBoundingClientRect();
+    var whalf = r.width/2;
+    var hhalf = r.height/2;
+    var x=r.left+whalf;
+    var y=r.top+hhalf;
+    var screenX = getScrollX() + whalf;
+    var screenY = getScrollY() + hhalf;
+    var el2=document.elementFromPoint(x,y);
+    if (el2&&el2!=el) { //check if a sub el is in the middle
+      mylog("!!!el2:"+el2.tagName);
+    }
+    var evInit = eventInit();
+    evInit.clientX = whalf;
+    evInit.clientY = hhalf;
+    evInit.screenX = screenX;
+    evInit.clientY = screenY;
+    var mouseEv=new MouseEvent("click", evInit );
+    el.dispatchEvent(mouseEv);
   }
   function getNavMan() {
     var sess=getCurrentSession();
@@ -186,6 +257,13 @@ console.log("gbc_fgljp begin");
     var baseurl=l.protocol+"//"+l.host;
     return baseurl;
   }
+  function getCloseUrl() {
+    //GBC4: we use _sessId
+    var id=_sessId?_sessId:getCurrentSession().getSessionId();
+    var sessId = encodeURIComponent(id);
+    //use an fgljp specific URL
+    return getUrlBase() + "/ua/fgljp_close/"+sessId;
+  }
   //computes the necessary URL when running via GAS protocol
   function getUrl() {
     var usp=new URLSearchParams(window.location.search);
@@ -201,7 +279,7 @@ console.log("gbc_fgljp begin");
   }
   //sends request via AJAX , in SSE mode the POST doesn't get a result back
   //instead the SSE events get any VM protocol data
-  function sendAjax(events,what,recursive) {
+  function sendAjax(events,what,close) {
     if (_xmlH!=null) {
       var req=_xmlH;
       mylog("abort _xmlH with: "+req.URL+","+req.EVENTS+","+req.WHAT);
@@ -211,8 +289,8 @@ console.log("gbc_fgljp begin");
     _xmlH = new XMLHttpRequest();
     //alert("sendAjax "+events+what);
     var req=_xmlH;
-    var url=getUrl();
-    req.open(what,url,_xmlAsyncFlag);
+    var url=(close===true)?getCloseUrl():getUrl();
+    req.open(what,url);
     req.URL=url;
     req.EVENTS=events;
     req.WHAT=what;
@@ -231,7 +309,47 @@ console.log("gbc_fgljp begin");
     sendAjax(events.trim()+"\n","POST");
     _procId=null;
   }
-
+  function getClickableGBCEl(el,text) {
+    //walks up the dom hierarchy to find GBC assets and to
+    //check if there isn't a "disabled" class tag
+    if (!el) {
+      return null;
+    } else  if (el.classList.contains("disabled")) {
+      if (el.getAttribute("interruptable-active")=="interruptable-active") {
+        return el;
+      }
+      console.warn("disabled class found for text '"+text+"'");
+      return null;
+    } else if (el.id!="" && el.className.indexOf("gbc_") !== -1) {
+      return el;
+    }
+    return getClickableGBCEl(el.parentElement,text);
+  }
+  function addFGLGBCFrontCalls(gbc) {
+    gbc.FrontCallService.modules.fgljp = {
+      click_on_element_with_text: function(text,xinterval) {
+        let interval=parseInt(xinterval);
+        if (isNaN(interval) || interval < 300) {
+          interval=300;
+        }
+        var el=elForText(text);
+        if (!el) {
+          this.runtimeError("Can't find element with text '"+text+"'");
+        } else {
+          setTimeout(function() {
+           let gbcEl=getClickableGBCEl(el.parentElement,text);
+           if (gbcEl!==null) {
+             sendQAMouseEvent(el);
+           } else {
+             mylog("TODO: raise error in Genero program");
+           }
+          }, interval);
+          return [];
+        }
+      }
+    }
+    fgljp.click_on_element_with_text=window.gbc.FrontCallService.modules.fgljp.click_on_element_with_text;
+  }
   function addDebuggerFrontCalls(gbc) {
     gbc.FrontCallService.modules.debugger = {
       setactivewindow: function(procId) {
@@ -298,7 +416,7 @@ console.log("gbc_fgljp begin");
              meta:meta,
              forcedURfrontcalls:{},
              debugMode:1,
-             logLevel:2};
+             logLevel:_verbose?4:2};
     _lastMeta = meta;
     emitReady(obj);
     addGBCPatches(window.gbc);
@@ -326,6 +444,10 @@ console.log("gbc_fgljp begin");
     window.gbcWrapper.childStart = function() {
       urlog("childStart");
     }
+    function procIdFromData(data) {
+      var procId=(typeof data=="object"&&data.procId)?data.procId:undefined;
+      return procId;
+    }
     window.gbcWrapper.close = function(data) {
       urlog("gbcWrapper.close:"+tryJSONs(data));
       if (typeof data=="object" && data.procId ) {
@@ -347,6 +469,7 @@ console.log("gbc_fgljp begin");
     }
     window.gbcWrapper.interrupt = function(data) {
       urlog("gbcWrapper.interrupt:"+tryJSONs(data));
+      sendPOST("interrupt",procIdFromData(data));
     }
     window.gbcWrapper.ping = function() {
       urlog("ping");
@@ -359,6 +482,7 @@ console.log("gbc_fgljp begin");
       var url = window.gbc.UrlService.currentUrl();
       url.removeQueryString("app");
       url.removeQueryString("useSSE");
+      url.removeQueryString("verbose");
       url.removeQueryString("UR_PLATFORM_TYPE");
       url.removeQueryString("UR_PLATFORM_NAME");
       url.removeQueryString("UR_PROTOCOL_TYPE");
@@ -412,11 +536,22 @@ console.log("gbc_fgljp begin");
     //signal metaobj to GBC
     window.gbcWrapper.emit("ready", metaobj);
   }
+  window.gbc_fgljp_unload=function() {
+    //urlog("!!!!gbc_fgljp_unload unload!!!");
+    console.log("!!!!gbc_fgljp_unload unload!!!");
+    closeSource();
+    //send a single post to the close url to inform fgljb about browser dead
+    sendAjax("","POST",true);
+  };
   //called by ajax/SSE
   function emitReceive(data, procId) {
     urlog("emitReceive: " + data + ",procId:" + procId);
     var d = (_proto == 2) ? { content : data, procId: procId } : data;
-    window.gbcWrapper.emit("receive", d);
+    try {
+      window.gbcWrapper.emit("receive", d);
+    } catch(err) {
+      alert("emitReceive failed:"+err.message);
+    }
   }
   function emit_rn0(procId) {
     try {
@@ -500,7 +635,9 @@ console.log("gbc_fgljp begin");
     mylog("added eventsource at url:"+url);
   }
   function closeSource() {
-    _source.close()
+    if (_source) {
+      _source.close()
+    }
     _source=null;
   }
   function reAddSource(url,checkProcIds) { //needed for firefox: ignores the retry param
@@ -537,6 +674,7 @@ console.log("gbc_fgljp begin");
     if (_isGBC4 && !haveDebuggerFCs) {
       patchNavMan(classes); //add some helpers
     }
+    addFGLGBCFrontCalls(gbc);
   }
 
   function patchWrapResourcePath(classes) {
@@ -658,6 +796,9 @@ console.log("gbc_fgljp begin");
     mylog("gbc_fgljp startWrapper");
     sendAjax("",(_useSSE ? "POST":"GET"));
   }
+  function getSessId() {
+    return _sessId;
+  }
   if (_debug) {
     fgljp.addGBCPatches=addGBCPatches;
     fgljp.startWrapper=startWrapper;
@@ -667,6 +808,7 @@ console.log("gbc_fgljp begin");
     fgljp.getProcId=getProcId;
     fgljp.getNavMan=getNavMan;
     fgljp.raiseProcId=raiseProcId;
+    fgljp.getSessId=getSessId;
   }
   window.gbc.ThemeService.setValue("theme-sidebar-max-width","100000px");
   var ver=window.gbc.version;

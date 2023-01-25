@@ -26,13 +26,14 @@ $(1)
 endef
 
 endif
-
+ifdef VERBOSE
+  VERBOSEARG=-v
+endif
 
 all: fgljp.42m mygetopt.42m runonserver.42m getgdcpath.42m fglssh.42m URI.42m
 
-demo: fgljp.42m demo.42m demo.42f
-#	./fgljp -v demo.42m a b
-	$(FGLJP) demo.42m a b
+demo: fgljp.42m interrupt.42f demo.42m demo.42f
+	$(FGLJP) $(VERBOSEARG) demo.42m a b
 
 test/wait_for_fgljp_start.42m:
 	make -C test
@@ -71,6 +72,9 @@ demogmi: fgljp.42m demo.42m demo.42f
 demogdc: fgljp.42m demo.42m demo.42f
 	GDC=1 ./fgljp -v -g demo.42m a b
 
+tests:
+	make -C test test
+
 format:
 	rm -f *.4gl~
 	fglcomp -M --format --fo-inplace mygetopt.4gl
@@ -85,6 +89,7 @@ clean_prog:
 clean: clean_prog
 	rm -f *.42? *.4gl~
 	rm -rf priv cacheFT
+	rm -f upload*.png
 	$(MAKE) -C test clean
 
 distclean: clean

@@ -10,8 +10,8 @@ IMPORT util
 IMPORT FGL mygetopt
 IMPORT FGL URI
 CONSTANT _keepalive =
-    FALSE --if set to TRUE http socket connections are kept alive
---currently: FALSE: TODO Safari blocks after fgl_putfile
+    TRUE --if set to TRUE http socket connections are kept alive, needed for safari browser close
+--TODO sometimes Safari blocks after fgl_putfile() if keepalive is true
 DEFINE _useJSWrapper BOOLEAN --whether we use the 'native' embed mode in GBC
 --set after the first GBC is loaded
 --note: mixing GBC's in remote mode gives undefined behavior for now
@@ -36,6 +36,9 @@ CONSTANT S_WAITFORVM = "WaitForVM"
 CONSTANT S_HTTPHANDLER = "HttpHandler"
 CONSTANT S_FINISH = "Finish"
 CONSTANT PUTFILE_DELIVERED = "!!!!__putfile_delivered__!!!"
+
+CONSTANT CLIENT_CLOSE = "close\n"
+CONSTANT CLIENT_INTERRUPT = "interrupt\n"
 
 CONSTANT APP_COOKIE = "GENERO_APP"
 CONSTANT SID_COOKIE = "GENERO_SID"
@@ -68,6 +71,7 @@ TYPE TConnectionRec RECORD
   procId STRING, --VM procId
   sessId STRING, --session Id
   path STRING,
+  pathCut STRING,
   method STRING,
   body STRING,
   appCookie STRING,
@@ -106,9 +110,13 @@ TYPE TVMRec RECORD
   writeC base.Channel,
   procId STRING, --VM procId
   procIdParent STRING, --VM procIdParent
+  procIdParentWaiting STRING, --VM procIdParentWaiting
   procIdWaiting STRING, --VM procIdWaiting
+  programName STRING,
+  frontEndID STRING,
   sessId STRING, --session Id
   didSendVMClose BOOLEAN,
+  closeSeen BOOLEAN, --client did send close
   FTs FTList, --list of running file transfers
   --meta STRING,
   clientMetaSent BOOLEAN,
@@ -131,8 +139,8 @@ CONSTANT TOK_Ident = 3
 --encapsulation command types
 CONSTANT TAuiData = 1
 --CONSTANT TPing=2
---CONSTANT TInterrupt=3
---CONSTANT TCloseApp=4
+CONSTANT TInterrupt = 3
+CONSTANT TCloseApp = 4
 CONSTANT TFileTransfer = 5
 
 --FT command sub numbers
@@ -198,6 +206,8 @@ DEFINE _server base.Channel
 DEFINE _channels DYNAMIC ARRAY OF base.Channel
 DEFINE _didAcceptOnce BOOLEAN
 DEFINE _fglserver STRING
+DEFINE _fglfeid STRING
+DEFINE _numWaitingParent INT
 
 --Parser state record
 TYPE TclP RECORD
@@ -363,6 +373,10 @@ FUNCTION setup_program(priv STRING, pub STRING, port INT)
   CALL fgl_setenv("FGL_PUBLIC_IMAGEPATH", ".")
   CALL fgl_setenv("FGL_PRIVATE_URL_PREFIX", priv)
   CALL fgl_setenv("FGL_PUBLIC_URL_PREFIX", pub)
+  IF _fglfeid IS NULL THEN
+    LET _fglfeid = genSID(TRUE)
+    CALL fgl_setenv("_FGLFEID", _fglfeid)
+  END IF
   --CALL fgl_setenv("FGLGUIDEBUG", "1")
   --CALL fgl_setenv("FGLGUIDEBUG", "1")
   --should work on both Win and Unix
@@ -831,6 +845,11 @@ END FUNCTION
 FUNCTION handleVM(vmidx INT, vmclose BOOLEAN, httpIdx INT)
   DEFINE procId STRING
   DEFINE line STRING
+  IF _v[vmidx].closeSeen THEN
+    CALL handleVMFinish(vmidx)
+    RETURN
+  END IF
+
   IF NOT vmclose THEN
     CALL checkNewTasks(vmidx) RETURNING status
   END IF
@@ -931,14 +950,27 @@ FUNCTION sendVMCloseViaSSE(x INT, sessId STRING)
   CALL writeResponseInt2(x, cmd, ct, hdrs, "200 OK")
 END FUNCTION
 
+FUNCTION procIdFromPath(path STRING, subPos INT, qidx INT) RETURNS STRING
+  DEFINE procId, surl, appId STRING
+  DEFINE dict TStringDict
+  DEFINE url URI
+  LET surl = "http://", _localhost, path
+  CALL getURLQueryDict(surl) RETURNING dict, url
+  LET procId = util.Strings.urlDecode(path.subString(subPos, qidx - 1))
+  LET appId = dict["appId"]
+  IF appId <> "0" THEN
+    LET procId = appId
+    MYASSERT(procId IS NOT NULL)
+  END IF
+  RETURN procId
+END FUNCTION
+
 FUNCTION handleUAProto(x INT, path STRING)
-  DEFINE body, procId, vmCmd, surl, appId, sessId STRING
+  DEFINE body, procId, vmCmd, sessId STRING
   DEFINE qidx, vmidx INT
   DEFINE vmclose, newtask BOOLEAN
   DEFINE hdrs TStringArr
   --DEFINE key SelectionKey
-  DEFINE dict TStringDict
-  DEFINE url URI
   LET qidx = path.getIndexOf("?", 1)
   LET qidx = IIF(qidx > 0, qidx, path.getLength() + 1)
   CASE
@@ -963,16 +995,17 @@ FUNCTION handleUAProto(x INT, path STRING)
         RETURN
       END IF
       --END IF
+    WHEN path.getIndexOf("/ua/fgljp_close/", 1) == 1
+      LET sessId = util.Strings.urlDecode(path.subString(17, qidx - 1))
+      CALL handleBrowserClose(x,sessId)
+      LET _s[x].state = S_FINISH
+      CALL finishHttp(x)
+      RETURN
+    WHEN path.getIndexOf("/ua/interrupt/", 1) == 1 -- GAS proto interrupt
+      LET procId = procIdFromPath(path, 15, qidx)
+      LET _s[x].body = CLIENT_INTERRUPT
     WHEN path.getIndexOf("/ua/sua/", 1) == 1
-      LET surl = "http://", _localhost, path
-      CALL getURLQueryDict(surl) RETURNING dict, url
-      LET appId = dict["appId"]
-      LET procId = util.Strings.urlDecode(path.subString(9, qidx - 1))
-      IF appId <> "0" THEN
-        --LET procId = _selDict[procId].t[appId]
-        LET procId = appId
-        MYASSERT(procId IS NOT NULL)
-      END IF
+      LET procId = procIdFromPath(path, 9, qidx)
     WHEN path.getIndexOf("/ua/newtask/", 1) == 1
       LET procId = util.Strings.urlDecode(path.subString(13, qidx - 1))
       LET sessId = procId
@@ -995,7 +1028,6 @@ FUNCTION handleUAProto(x INT, path STRING)
   IF NOT newtask THEN
     IF _s[x].method == "POST" THEN
       LET body = _s[x].body
-      --DISPLAY "POST body:'", body, "'"
       IF body.getLength() > 0 THEN
         IF NOT writeToVMWithProcId(x, body, procId) THEN
           IF NOT _s[x].state.equals(S_WAITFORVM) THEN
@@ -1024,9 +1056,14 @@ FUNCTION handleUAProto(x INT, path STRING)
       CALL _RWWchildren[sessId].clear()
     ELSE
       LET sessId = _v[vmidx].sessId
+      IF sessId IS NOT NULL THEN
+        LET _s[x].sessId = sessId
+      END IF
     END IF
-    IF _v[vmidx].useSSE AND _s[x].method == "POST" THEN
+    IF (_v[vmidx].useSSE OR body == CLIENT_INTERRUPT)
+        AND _s[x].method == "POST" THEN
       --only if SSE is active we answer with an empty result
+      --DISPLAY "!!!answer with empty result"
       CALL sendToClient(x, "", procId, FALSE, FALSE)
       RETURN
     END IF
@@ -1140,6 +1177,9 @@ FUNCTION sendToClient(
   DEFINE vmidx INT
   DEFINE children TStringArr
   --DEFINE pp STRING
+  CALL log(
+      SFMT("sendToClient:(x:%1,vmCmd:%2,procId:%3,vmclose:%4,newtask:%5)",
+          x, vmCmd, procId, vmclose, newtask))
   LET hdrs[hdrs.getLength() + 1] = "Pragma: no-cache"
   LET hdrs[hdrs.getLength() + 1] = "Expires: -1"
   LET hdrs[hdrs.getLength() + 1] = "X-XSS-Protection: 1; mode=block"
@@ -1234,18 +1274,18 @@ FUNCTION sendToClient(
 END FUNCTION
 
 FUNCTION handleGBCPath(x INT, path STRING)
-  DEFINE fname STRING
-  --DEFINE sub STRING
+  DEFINE fname, pathCut STRING
   DEFINE cut BOOLEAN
   DEFINE idx1, idx2, idx3 INT
   DEFINE d TStringDict
   DEFINE url URI
   LET cut = TRUE
-  --DISPLAY "path=", path
+  LET pathCut = cut_question(path)
+  LET _s[x].pathCut = pathCut
   CASE
-    WHEN path.getIndexOf("/gbc/index.html", 1) == 1
+    WHEN pathCut == "/gbc/index.html"
       CALL setAppCookie(x, path)
-    WHEN path.getIndexOf("/gbc/gbc_fgljp.js?", 1) == 1
+    WHEN pathCut == "/gbc/gbc_fgljp.js"
         AND os.Path.exists((fname := os.Path.join(_owndir, "gbc_fgljp.js")))
       CALL log(SFMT("handleGBCPath: process our gbc_fglp bootstrap:%1", fname))
       CALL processFile(x, fname, TRUE)
@@ -1287,6 +1327,7 @@ FUNCTION handleGBCPath(x INT, path STRING)
         LET fname = "gbc://", path.subString(6, path.getLength())
     END CASE
     LET fname = IIF(cut, cut_question(fname), fname)
+    LET _s[x].pathCut = cut_question(fname)
     CALL processRemoteFile(x, fname)
   END IF
 END FUNCTION
@@ -1497,7 +1538,7 @@ FUNCTION processFile(x INT, fname STRING, cache BOOLEAN)
   DEFINE ext, ct, txt STRING
   DEFINE etag STRING
   DEFINE hdrs TStringArr
-  --DISPLAY "processFile:", x, " ", fname
+  --DISPLAY "processFile:", x, " ", fname,",pathCut:",_s[x].pathCut,",method:",_s[x].method
   IF NOT os.Path.exists(fname) THEN
     CALL http404(x, fname)
     RETURN
@@ -1517,6 +1558,13 @@ FUNCTION processFile(x INT, fname STRING, cache BOOLEAN)
       CALL sendNotModified(x, fname, etag)
       RETURN
     END IF
+  END IF
+  IF _s[x].method == "GET"
+      AND (_s[x].pathCut == "/gbc/js/gbc.js"
+          OR _s[x].pathCut == "gbc://js/gbc.js") THEN
+    --DISPLAY "!!!!processGBCJS:", x, " ", fname
+    CALL process_gbc_js(x, fname, etag)
+    RETURN
   END IF
   LET ext = os.Path.extension(fname)
   LET ct = NULL
@@ -1646,6 +1694,20 @@ FUNCTION process_index_html(x INT, fname STRING)
   END IF
 END FUNCTION
 
+--we need to patch the head of gbc.js
+--(insert an unload handler)
+--GBC's unload handlers otherwise don't let us get a foot into the door
+FUNCTION process_gbc_js(x INT, gbc_js STRING, etag STRING)
+  DEFINE txt STRING
+  DEFINE hdrs TStringArr
+  --add our custom unload code as the 1st instruction in gbc.js
+  LET txt =
+      '"use strict";\nwindow.addEventListener("unload",function(e) {\nconsole.log("process gbc_fgljp_unload gbc");\ntry { window.gbc_fgljp_unload();\n} catch(err) {\nconsole.warn("process gbc_fgljp_unload error:"+err.msg);\n}\n});\n'
+  LET txt = txt, readTextFile(gbc_js)
+  LET hdrs = getCacheHeaders(TRUE, etag)
+  CALL writeResponseCtHdrs(x, txt, "application/x-javascript", hdrs)
+END FUNCTION
+
 FUNCTION cut_question(fname)
   DEFINE fname STRING
   DEFINE idx INT
@@ -1666,6 +1728,7 @@ FUNCTION http404(x INT, fn STRING)
 END FUNCTION
 
 FUNCTION writeHTTPLine(x INT, s STRING)
+  --DISPLAY sfmt("writeHTTPLine:%1=%2",x,s)
   LET s = s, "\r\n"
   CALL writeHTTP(x, s)
 END FUNCTION
@@ -1748,12 +1811,31 @@ FUNCTION handleClientMeta(vmidx INT, meta STRING)
   RETURN meta
 END FUNCTION
 
+FUNCTION handleBrowserClose(x INT,sessId STRING)
+  DEFINE i INT
+  CALL log(sfmt("handleBrowserClose:%1 sessId:%2",printSel(x),sessId))
+  FOR i=1 TO _v.getLength()
+    IF _v[i].sessId==sessId THEN
+      CALL writeToVM(i, CLIENT_CLOSE)
+    ELSE
+      --CALL dlog(SFMT("vm idx:%1 has sessId:%2", printV(i), _v[i].sessId))
+    END IF
+  END FOR
+END FUNCTION
+
 FUNCTION writeToVM(vmidx INT, s STRING)
-  CALL log(SFMT("writeToVM:'%1'", s))
+  CALL log(SFMT("writeToVM:%1 wait:%2", s, _v[vmidx].wait))
+  LET _v[vmidx].closeSeen = s.equals(CLIENT_CLOSE)
   IF _v[vmidx].wait THEN
-    --DISPLAY "!!!!!!!!!!!!!!writeToVM wait pending:"
-    LET _v[vmidx].toVMCmd = s
-    RETURN
+    IF s.equals(CLIENT_INTERRUPT) OR _v[vmidx].closeSeen THEN
+      CALL log(SFMT(" writeToVM wait pending, force write for:%1", s))
+      --reset wait to avoid assertion
+      LET _v[vmidx].wait = FALSE
+    ELSE
+      CALL log(SFMT("  writeToVM wait pending,store:%1", s))
+      LET _v[vmidx].toVMCmd = s
+      RETURN
+    END IF
   END IF
   IF _opt_program IS NULL THEN
     IF NOT _v[vmidx].clientMetaSent THEN
@@ -1790,6 +1872,7 @@ FUNCTION writeHTTPFile(x INT, fn STRING, ctlen INT)
   VAR written = util.Channels.copyN(c, chan, ctlen)
   MYASSERT(written == ctlen)
   CALL c.close()
+  CALL chan.flush()
 END FUNCTION
 
 FUNCTION writeResponse(x INT, content STRING)
@@ -1996,7 +2079,9 @@ FUNCTION writeResponseInt2(
     CALL writeHTTPLine(x, SFMT("Content-Type: %1", ct))
   END IF
   CALL writeHTTPLine(x, "")
-  CALL util.Channels.writeBinaryString(_s[x].chan, content)
+  VAR chan=_s[x].chan
+  CALL util.Channels.writeBinaryString(chan, content)
+  CALL chan.flush()
 END FUNCTION
 
 FUNCTION writeResponseFileHdrs(x INT, fn STRING, ct STRING, headers TStringArr)
@@ -2060,20 +2145,20 @@ FUNCTION extractMetaVarSub(
 END FUNCTION
 
 FUNCTION extractProcId(p STRING)
-  --DEFINE pidx1 INT
   RETURN p --we always use the full procId now
-  {
+END FUNCTION
+
+FUNCTION extractPidFromProcId(p STRING)
+  DEFINE pidx1 INT
   LET pidx1 = p.getIndexOf(":", 1)
   MYASSERT(pidx1 > 0)
   RETURN p.subString(pidx1 + 1, p.getLength())
-  }
 END FUNCTION
 
 FUNCTION handleVMMetaSel(c INT, line STRING)
-  DEFINE pp, procIdWaiting, sessId, encaps, compression, rtver STRING
-  DEFINE ftV, ftFC, feid, env_feid STRING
-  DEFINE vmidx, ppidx, waitIdx INT
-  DEFINE children TStringArr
+  DEFINE pp, procIdWaiting, encaps, compression, rtver STRING
+  DEFINE ftV, ftFC, feid, env_feid, name STRING
+  DEFINE vmidx INT
   --allocate a new VM index
   LET vmidx = findFreeVMIdx()
   --DISPLAY "new vmidx:", vmidx
@@ -2086,6 +2171,7 @@ FUNCTION handleVMMetaSel(c INT, line STRING)
     CALL closeSel(c)
     RETURN -1
   END IF
+  LET _v[vmidx].frontEndID = feid
   LET _currIdx = -vmidx
   --assign matching members from _s to _v
   LET _v[vmidx].active = TRUE
@@ -2098,9 +2184,12 @@ FUNCTION handleVMMetaSel(c INT, line STRING)
   LET _v[vmidx].VmCmd = line
   LET _v[vmidx].state = IIF(_opt_program IS NOT NULL, S_ACTIVE, S_WAITFORFT)
   LET _v[vmidx].isMeta = TRUE
+  IF (name := extractMetaVar(line, "programName", FALSE)) IS NOT NULL THEN
+    LET _v[vmidx].programName = name
+  END IF
   CALL log(SFMT("handleVMMetaSel:%1", line))
   LET encaps = extractMetaVar(line, "encapsulation", TRUE)
-  LET compression = extractMetaVar(line, "compression", TRUE)
+  LET compression = extractMetaVar(line, "compression", FALSE)
   --DISPLAY "encaps:", encaps, ",compression:", compression
   IF compression IS NOT NULL THEN
     MYASSERT(compression.equals("none")) --avoid that someone enables zlib
@@ -2122,39 +2211,53 @@ FUNCTION handleVMMetaSel(c INT, line STRING)
   LET pp = extractMetaVar(line, "procIdParent", FALSE)
   IF pp IS NOT NULL THEN
     LET pp = extractProcId(pp)
-    --DISPLAY "procIdParent of:", _v[vmidx].procId, " is:", pp
-    IF _selDict.contains(pp) THEN
-      LET ppidx = _selDict[pp]
-      IF (sessId := _v[ppidx].sessId) IS NOT NULL THEN
-        --DISPLAY SFMT("set _v[%1].sessId=%2", vmidx, sessId)
-        LET _v[vmidx].sessId = sessId
-        LET _v[vmidx].useSSE = _v[ppidx].useSSE
-        IF _RWWchildren.contains(sessId) THEN
-          LET children =
-              _RWWchildren[sessId] --could be RUN WITHOUT WAITING child
-        END IF
-      END IF
-      IF procIdWaiting IS NOT NULL
-          AND NOT _v[vmidx].useSSE
-          AND _selDict.contains(procIdWaiting) THEN
-        LET waitIdx = _selDict[procIdWaiting];
-        LET _v[waitIdx].RUNchildIdx = vmidx;
-      END IF
-      IF procIdWaiting == pp THEN
-        LET children = _v[ppidx].RUNchildren --procIdWaiting forces a RUN child
-      END IF
-      IF NOT _v[vmidx].useSSE THEN
-        LET children[children.getLength() + 1] = _v[vmidx].procId
-      END IF
-      --DISPLAY "!!!!set children of:",
-      --    printSel(ppidx),
-      --    " to:",
-      --    util.JSON.stringify(children)
-      LET _v[vmidx].procIdParent = pp
-    END IF
+    CALL checkChildren(vmidx, pp)
   END IF
   CALL decideStartOrNewTask(vmidx)
   RETURN vmidx
+END FUNCTION
+
+FUNCTION checkChildren(vmidx INT, procIdParent STRING)
+  DEFINE children TStringArr
+  DEFINE ppidx, waitIdx INT
+  DEFINE sessId, procIdWaiting, ppid STRING
+  IF NOT _selDict.contains(procIdParent) THEN
+    LET ppid = extractPidFromProcId(procIdParent)
+    IF ppid == fgl_getpid() THEN
+      --DISPLAY "we did invoke this program"
+    ELSE
+      DISPLAY "checkChildren vmidx:", vmidx, ",no procIdParent:", procIdParent
+      LET _v[vmidx].procIdParentWaiting = procIdParent
+    END IF
+    RETURN
+  END IF
+  LET ppidx = _selDict[procIdParent]
+  LET procIdWaiting = _v[vmidx].procIdWaiting
+  LET _v[vmidx].procIdParent = procIdParent
+  IF (sessId := _v[ppidx].sessId) IS NOT NULL THEN
+    --DISPLAY SFMT("checkChildren set _v[%1].sessId=%2", vmidx, sessId)
+    LET _v[vmidx].sessId = sessId
+    LET _v[vmidx].useSSE = _v[ppidx].useSSE
+    IF NOT _v[vmidx].useSSE AND _RWWchildren.contains(sessId) THEN
+      LET children = _RWWchildren[sessId] --could be RUN WITHOUT WAITING child
+    END IF
+  END IF
+  IF procIdWaiting IS NOT NULL
+      AND NOT _v[vmidx].useSSE
+      AND _selDict.contains(procIdWaiting) THEN
+    LET waitIdx = _selDict[procIdWaiting];
+    LET _v[waitIdx].RUNchildIdx = vmidx;
+  END IF
+  IF procIdWaiting == procIdParent THEN
+    LET children = _v[ppidx].RUNchildren --procIdWaiting forces a RUN child
+  END IF
+  IF NOT _v[vmidx].useSSE THEN
+    LET children[children.getLength() + 1] = _v[vmidx].procId
+  END IF
+  --DISPLAY "!!!!set children of:",
+  --    printSel(ppidx),
+  --    " to:",
+  --    util.JSON.stringify(children)
 END FUNCTION
 
 {
@@ -2165,6 +2268,46 @@ FUNCTION parentActive(procId STRING)
 
 END FUNCTION
 }
+
+FUNCTION findAppWithSameFEID(feid STRING)
+  DEFINE keys TStringArr
+  DEFINE i, vmidx INT
+  MYASSERT(feid IS NOT NULL)
+  LET keys = _selDict.getKeys()
+  FOR i = 1 TO keys.getLength()
+    LET vmidx = _selDict[keys[i]]
+    IF feid.equals(_v[vmidx].frontEndID) THEN
+      RETURN TRUE
+    END IF
+  END FOR
+  RETURN FALSE
+END FUNCTION
+
+FUNCTION checkWaitingForParent(procId STRING, sessId STRING, useSSE BOOLEAN)
+  DEFINE keys TStringArr
+  DEFINE vmidx INT
+  CALL log(
+      SFMT("checkWaitingForParent:procId:%1,sessId:%2,useSSE:%3",
+          procId, sessId, useSSE))
+  MYASSERT(procId IS NOT NULL)
+  MYASSERT(sessId IS NOT NULL)
+  LET keys = _selDict.getKeys()
+  FOR vmidx = 1 TO _v.getLength()
+    IF NOT S_ACTIVE.equals(_v[vmidx].state) THEN
+      CONTINUE FOR
+    END IF
+    IF procId.equals(_v[vmidx].procIdParentWaiting) THEN
+      CALL log(
+          SFMT("checkWaitingForParent: found waiting app:%1,procId:%2 for parent:%3",
+              _v[vmidx].programName, _v[vmidx].procId, procId))
+      LET _numWaitingParent = _numWaitingParent - 1
+      LET _v[vmidx].procIdParentWaiting = NULL
+      CALL checkChildren(vmidx, procId)
+      MYASSERT(_numWaitingParent >= 0)
+      CALL handleVM(vmidx, FALSE, 0)
+    END IF
+  END FOR
+END FUNCTION
 
 FUNCTION decideStartOrNewTask(vmidx INT)
   DEFINE pp, procId STRING
@@ -2200,7 +2343,25 @@ FUNCTION decideStartOrNewTask(vmidx INT)
           AND NOT _selDict.contains(pp)
         CALL handleStart(vmidx)
     END CASE
+    IF _opt_program IS NOT NULL AND _numWaitingParent > 0 THEN
+      IF _v[vmidx].sessId IS NOT NULL THEN
+        IF NOT _v[vmidx].useSSE AND _selDict.contains(pp) THEN
+          LET _selDict[procId] = vmidx --store the selector index of the procId
+        END IF
+        CALL checkWaitingForParent(procId, _v[vmidx].sessId, _v[vmidx].useSSE)
+      END IF
+    END IF
   ELSE
+    IF _opt_program IS NOT NULL
+        AND _v[vmidx].frontEndID IS NOT NULL
+        AND _v[vmidx].procIdParentWaiting IS NOT NULL
+        AND findAppWithSameFEID(_v[vmidx].frontEndID) THEN
+      LET _numWaitingParent = _numWaitingParent + 1
+      CALL log(
+          SFMT("decideStartOrNewTask incr _numWaitingParent:%1, procIdParentWaiting:%2",
+              _numWaitingParent, _v[vmidx].procIdParentWaiting))
+      RETURN
+    END IF
     CALL handleStart(vmidx)
   END IF
   IF _opt_program IS NULL THEN
@@ -2302,7 +2463,11 @@ FUNCTION handleStart(vmidx INT)
     CALL checkRequestFT(-1, vmidx, "gbc://VERSION")
   ELSE
     --just look in FGLGBCDIR
-    CALL handleGBCVersion(vmidx, gbcResourceName("VERSION"))
+    IF _opt_gdc THEN
+      CALL handleStart2(vmidx)
+    ELSE
+      CALL handleGBCVersion(vmidx, gbcResourceName("VERSION"))
+    END IF
   END IF
 END FUNCTION
 
@@ -2334,6 +2499,9 @@ FUNCTION handleStart2(vmidx INT)
       LET startPath = startPath, "&UR_PROTOCOL_TYPE=direct"
       IF _gbcver >= 4.0 THEN
         LET startPath = startPath, "&UR_PROTOCOL_VERSION=2"
+      END IF
+      IF _verbose THEN
+        LET startPath = startPath, "&verbose=1"
       END IF
     END IF
     IF _firstPath IS NULL THEN
@@ -2620,6 +2788,10 @@ FUNCTION handleVMFinish(v INT)
     LET httpIdx = getSSEIdxFor(vmidx)
   ELSE
     LET httpIdx = _v[vmidx].httpIdx
+  END IF
+  IF _v[vmidx].closeSeen THEN
+    LET httpIdx = 0
+    CALL selDictRemove(_v[vmidx].procId)
   END IF
   CALL log(
       SFMT("handleVMFinish:%1, http:%2",
@@ -3218,7 +3390,7 @@ FUNCTION getMacDefaultBrowser()
     END IF
     LET cnt = cnt + 1
   END WHILE
-  DISPLAY "default browser:", browser
+  CALL log(sfmt("default browser:%1", browser))
   RETURN browser
 END FUNCTION
 
@@ -4105,8 +4277,20 @@ END FUNCTION
 
 FUNCTION writeToVMEncaps(vmidx INT, cmd STRING)
   DEFINE chan base.Channel
+  DEFINE type TINYINT
   LET chan = _v[vmidx].chan
-  CALL writeEncapsHeader(chan, TAuiData, cmd.getLength())
+  CASE cmd
+    WHEN CLIENT_INTERRUPT
+      LET cmd = ""
+      LET type = TInterrupt
+    WHEN CLIENT_CLOSE
+      LET cmd = ""
+      LET type = TCloseApp
+    OTHERWISE
+      LET type = TAuiData
+  END CASE
+  CALL log(SFMT("writeToVMEncaps vmidx:%1,cmd:%2", vmidx, limitPrintStr(cmd)))
+  CALL writeEncapsHeader(chan, type, cmd.getLength())
   CALL util.Channels.writeBinaryString(chan, cmd)
   CALL chan.flush()
 END FUNCTION
@@ -4690,4 +4874,35 @@ FUNCTION genSID(short BOOLEAN)
 &endif
   CALL log(SFMT("genSID:%1", s))
   RETURN s
+END FUNCTION
+
+FUNCTION interpretchars(s STRING) RETURNS STRING
+  DEFINE c, hex STRING
+  DEFINE i, len INT
+  DEFINE sb base.StringBuffer
+  CONSTANT ascji =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz1234567890!@#$%^&*()-=_+~`{}[] |:;\"'<>,.?/\\"
+  --CONSTANT  "\"\\"
+  LET len = s.getLength()
+  LET sb = base.StringBuffer.create()
+  FOR i = 1 TO len
+    LET c = s.getCharAt(i)
+    CASE
+      WHEN ascji.getIndexOf(c, 1) > 0
+        CALL sb.append(c)
+      WHEN c == '\r'
+        CALL sb.append("\\r")
+      WHEN c == '\b'
+        CALL sb.append("\\b")
+      WHEN c == '\t'
+        CALL sb.append("\\t")
+      WHEN c == '\n'
+        CALL sb.append("\\n")
+      OTHERWISE
+        LET hex = util.Integer.toHexString(ORD(c))
+        LET hex = IIF(hex.getLength() == 1, SFMT("0%1", hex), hex)
+        CALL sb.append(SFMT("\\x%1", hex))
+    END CASE
+  END FOR
+  RETURN sb.toString()
 END FUNCTION
