@@ -606,6 +606,11 @@ console.log("gbc_fgljp begin");
       reAddSource(url,false);
       myMeta(data.trim());
     });
+    source.addEventListener('retry', function(e) {
+      const procId=e.lastEventId;
+      console.log("SSE retry:'"+typeof e.data+","+e.data+"',id:"+procId);
+      reAddSource(url,false);
+    });
     source.addEventListener('message', function(e) {
       var procId = e.lastEventId;
       mylog("SSE msg data:'"+e.data+"',id:"+procId);
@@ -633,6 +638,9 @@ console.log("gbc_fgljp begin");
     });
     _source=source;
     mylog("added eventsource at url:"+url);
+    fgljp.reAdd2=function() {
+      reAddSource(url,false);
+    }
   }
   function closeSource() {
     if (_source) {

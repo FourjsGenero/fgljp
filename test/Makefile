@@ -8,13 +8,13 @@
 	fglform -M $<
 
 
-all: testutils.42m test.42m test.42f interrupt.42f runtests.42m wait_for_fgljp_start.42m
+all: testutils.42m test.42m test.42f interrupt.42f runtests.42m wait_for_fgljp_start.42m fttest.42m
 
 wait_for_fgljp_start.42m: testutils.42m
 
-test.42m: testutils.42m
+test.42m: testutils.42m test.42f
 
-runtests.42m: test.42m
+runtests.42m: test.42m test.42f fttest.42m
 
 test: all
 	-killall fglrun
@@ -22,5 +22,5 @@ test: all
 
 clean: 
 	rm -f *.42? *.4gl~ *.log 'logo?.png' tt
-	rm -rf priv cacheFT
+	rm -rf priv cacheFT FT
 

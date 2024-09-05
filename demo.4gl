@@ -84,13 +84,10 @@ MAIN
            EXIT MENU
       END MENU
       }
-      TRY
-        CALL fgl_putfile("logo.png", "logo2.png")
-        DISPLAY "fgl_putfile successful"
-        MESSAGE "fgl_putfile successful"
-      CATCH
-        ERROR "fgl_putfile failed:", err_get(status)
-      END TRY
+      CALL putfile()
+    COMMAND "2putfile"
+      CALL putfile()
+      CALL putfile()
     COMMAND "getfile"
       TRY
         LET uploadCount = uploadCount + 1
@@ -109,6 +106,16 @@ MAIN
       EXIT MENU
   END MENU
 END MAIN
+
+FUNCTION putfile()
+  TRY
+    CALL fgl_putfile("logo.png", "logo2.png")
+    DISPLAY "fgl_putfile successful"
+    MESSAGE "fgl_putfile successful"
+  CATCH
+    ERROR "fgl_putfile failed:", err_get(status)
+  END TRY
+END FUNCTION
 
 --called if the end user closes the browser or
 --navigates away from the application page
